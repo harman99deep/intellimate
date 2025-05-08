@@ -1,0 +1,37 @@
+services:
+  db:
+    image: postgres:15
+    container_name: onprem_postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: aimbot@808
+      POSTGRES_DB: onprem_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ./data:/var/lib/postgresql/data
+      - ./init:/docker-entrypoint-initdb.d
+      - ./imports:/imports
+    restart: always
+    networks:
+      - pgnetwork
+
+  pgadmin:
+    container_name: test-pgadmin
+    image: dpage/pgadmin4
+    restart: always
+    ports:
+      - "15432:80"
+    environment:
+      PGADMIN_DEFAULT_EMAIL: my_email@test.com
+      PGADMIN_DEFAULT_PASSWORD: my_password
+    volumes:
+      - ./servers.json:/pgadmin4/servers.json
+    networks:
+      - pgnetwork
+
+networks:
+  pgnetwork:
+    
+
+      

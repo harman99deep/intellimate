@@ -1,0 +1,12 @@
+Flask>=2.0
+pandas>=1.3
+numpy>=1.20
+scipy>=1.7
+scikit-learn>=1.0
+matplotlib>=3.4
+seaborn>=0.11
+google-generativeai>=0.3
+python-dotenv>=0.19
+Werkzeug>=2.0
+tabulate
+psycopg2-binary

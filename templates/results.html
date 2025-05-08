@@ -1,0 +1,35 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Analysis Results</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <div class="container" style="max-width: 1100px; margin: 0 auto;">
+        <h1>Data Drift & Anomaly Analysis Results</h1>
+        <a href="/" class="action-link">&#8592; Run New Analysis</a>
+        <hr>
+
+        <div class="card" style="background: #fff; border-radius: 10px; box-shadow: 0 2px 12px rgba(0,0,0,0.06); padding: 28px 32px; margin-bottom: 32px;">
+            <p style="font-size:1.1em;">
+                <strong>Historic Dataset:</strong> {{ historic_filename }}<br>
+                <strong>New Dataset:</strong> {{ new_filename }}
+            </p>
+
+            <details open>
+                <summary><span style="font-size:1.08em;">Preview: New Data (First 10 Rows)</span></summary>
+                <div class="preview-table-container">{{ new_preview|safe }}</div>
+            </details>
+
+            <hr>
+            <div class="results-section">
+                {{ report_content|safe }}
+            </div>
+        </div>
+    </div>
+    <script>
+        // Optionally, you can add more interactivity here
+    </script>
+</body>
+</html>

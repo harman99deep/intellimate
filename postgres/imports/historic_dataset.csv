@@ -1,0 +1,56 @@
+customer_id,first_name,last_name,age,email,city,state
+1001,John,Smith,32,john.smith@email.com,New York,New York
+1002,Emily,Johnson,28,emily.johnson@email.com,Los Angeles,California
+1003,Michael,Williams,45,michael.williams@email.com,Chicago,Illinois
+1004,Jessica,Brown,39,jessica.brown@email.com,Houston,Texas
+1005,David,Jones,41,david.jones@email.com,Phoenix,Arizona
+1006,Sarah,Garcia,35,sarah.garcia@email.com,Philadelphia,Pennsylvania
+1007,Robert,Miller,47,robert.miller@email.com,San Antonio,Texas
+1008,Jennifer,Davis,29,jennifer.davis@email.com,San Diego,California
+1009,William,Rodriguez,38,william.rodriguez@email.com,Dallas,Texas
+1010,Elizabeth,Martinez,42,elizabeth.martinez@email.com,San Jose,California
+1011,Thomas,Hernandez,31,thomas.hernandez@email.com,Austin,Texas
+1012,Patricia,Lopez,44,patricia.lopez@email.com,Jacksonville,Florida
+1013,James,Gonzalez,30,james.gonzalez@email.com,Fort Worth,Texas
+1014,Barbara,Wilson,47,barbara.wilson@email.com,Columbus,Ohio
+1015,Charles,Anderson,33,charles.anderson@email.com,Charlotte,North Carolina
+1016,Linda,Thomas,36,linda.thomas@email.com,Indianapolis,Indiana
+1017,Richard,Taylor,49,richard.taylor@email.com,Seattle,Washington
+1018,Margaret,Moore,27,margaret.moore@email.com,Denver,Colorado
+1019,Joseph,Jackson,43,joseph.jackson@email.com,Boston,Massachusetts
+1020,Susan,Martin,37,susan.martin@email.com,Nashville,Tennessee
+1021,Edward,Lee,45,edward.lee@email.com,Portland,Oregon
+1022,Nancy,Perez,29,nancy.perez@email.com,Oklahoma City,Oklahoma
+1023,Christopher,Thompson,50,christopher.thompson@email.com,Las Vegas,Nevada
+1024,Karen,White,32,karen.white@email.com,Detroit,Michigan
+1025,Daniel,Harris,41,daniel.harris@email.com,Memphis,Tennessee
+1026,Lisa,Sanchez,38,lisa.sanchez@email.com,Louisville,Kentucky
+1027,Matthew,Clark,44,matthew.clark@email.com,Baltimore,Maryland
+1028,Donna,Ramirez,34,donna.ramirez@email.com,Milwaukee,Wisconsin
+1029,Anthony,Lewis,46,anthony.lewis@email.com,Albuquerque,New Mexico
+1030,Dorothy,Robinson,30,dorothy.robinson@email.com,Tucson,Arizona
+1031,Mark,Walker,39,mark.walker@email.com,Fresno,California
+1032,Sandra,Young,48,sandra.young@email.com,Sacramento,California
+1033,Paul,Allen,37,paul.allen@email.com,Atlanta,Georgia
+1034,Ashley,King,26,ashley.king@email.com,Kansas City,Missouri
+1035,Steven,Wright,42,steven.wright@email.com,Miami,Florida
+1036,Kimberly,Scott,31,kimberly.scott@email.com,Raleigh,North Carolina
+1037,Andrew,Torres,47,andrew.torres@email.com,Omaha,Nebraska
+1038,Michelle,Nguyen,33,michelle.nguyen@email.com,Oakland,California
+1039,Kenneth,Hill,40,kenneth.hill@email.com,Minneapolis,Minnesota
+1040,Carol,Flores,35,carol.flores@email.com,Tulsa,Oklahoma
+1041,George,Green,49,george.green@email.com,Cleveland,Ohio
+1042,Amanda,Adams,27,amanda.adams@email.com,Wichita,Kansas
+1043,Joshua,Nelson,43,joshua.nelson@email.com,Arlington,Texas
+1044,Helen,Baker,38,helen.baker@email.com,New Orleans,Louisiana
+1045,Brian,Hall,41,brian.hall@email.com,Bakersfield,California
+1046,Deborah,Rivera,32,deborah.rivera@email.com,Tampa,Florida
+1047,Kevin,Campbell,46,kevin.campbell@email.com,Honolulu,Hawaii
+1048,Melissa,Mitchell,29,melissa.mitchell@email.com,Aurora,Colorado
+1049,Ronald,Carter,44,ronald.carter@email.com,Anaheim,California
+1050,Stephanie,Roberts,36,stephanie.roberts@email.com,Santa Ana,California
+1051,Timothy,Gomez,40,timothy.gomez@email.com,St. Louis,Missouri
+1052,Debra,Phillips,33,debra.phillips@email.com,Riverside,California
+1053,Jeffrey,Evans,47,jeffrey.evans@email.com,Corpus Christi,Texas
+1054,Laura,Turner,31,laura.turner@email.com,Lexington,Kentucky
+1055,Ryan,Diaz,38,ryan.diaz@email.com,Pittsburgh,Pennsylvania

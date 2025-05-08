@@ -1,0 +1,57 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Upload New Data for Analysis</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+</head>
+<body>
+    <h1>New Data Analysis Engine</h1>
+    <p class="subtitle">Upload a new CSV dataset for comparison against the historical baseline stored in the database.</p>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        <ul class="flashes">
+        {% for category, message in messages %}
+          <li class="{{ category if category else 'info' }}">{{ message }}</li>
+        {% endfor %}
+        </ul>
+      {% endif %}
+    {% endwith %}
+
+    <form method="post" action="/analyze" enctype="multipart/form-data">
+        <div class="upload-area">
+            <label for="new_file" class="file-label">
+                <span class="file-label-main">Upload New Data (CSV)</span>
+                <span class="file-label-sub">Required for analysis</span>
+                <input type="file" name="new_file" id="new_file" required>
+            </label>
+            <p id="new-filename" class="filename-display">No file selected</p>
+        </div>
+
+        <input type="submit" value="Analyze New Data" class="submit-button" id="analyze-button">
+    </form>
+
+    <footer>
+        <p>This tool compares your new dataset against historical patterns from PostgreSQL database.</p>
+    </footer>
+
+    <script>
+        document.getElementById('new_file').onchange = function () {
+            const fileInput = document.getElementById('new_file');
+            const filenameDisplay = document.getElementById('new-filename');
+            if (fileInput.files.length > 0) {
+                filenameDisplay.textContent = 'Selected: ' + fileInput.files[0].name;
+            } else {
+                filenameDisplay.textContent = 'No file selected';
+            }
+        };
+        document.querySelector('form').onsubmit = function() {
+            const button = document.getElementById('analyze-button');
+            button.value = 'Analyzing...';
+            button.disabled = true;
+            return true;
+        };
+    </script>
+</body>
+</html>
