@@ -1,57 +1,173 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <title>Upload New Data for Analysis</title>
-    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="description" content="Upload new CSV data for drift analysis and AI-powered insights." />
+    <title>IngestMate Data Drift | AIonOS</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}" />
+    <link rel="icon" href="https://aionos.io/wp-content/uploads/2024/04/cropped-file-1-32x32.png" />
 </head>
 <body>
-    <h1>New Data Analysis Engine</h1>
-    <p class="subtitle">Upload a new CSV dataset for comparison against the historical baseline stored in the database.</p>
+    <header class="main-nav-container">
+        <nav class="main-nav">
+            <a href="{{ url_for('index') }}">New Analysis</a>
+            <a href="{{ url_for('analysis_logs') }}">View Analysis Logs</a>
+        </nav>
+    </header>
 
-    {% with messages = get_flashed_messages(with_categories=true) %}
-      {% if messages %}
-        <ul class="flashes">
-        {% for category, message in messages %}
-          <li class="{{ category if category else 'info' }}">{{ message }}</li>
-        {% endfor %}
-        </ul>
-      {% endif %}
-    {% endwith %}
+    <main class="container">
+        <h1>IngestMate Analysis Engine</h1>
+        <p class="subtitle">Upload a CSV dataset for comparison against the historical baseline to get AI-powered insights on data drift.</p>
 
-    <form method="post" action="/analyze" enctype="multipart/form-data">
-        <div class="upload-area">
-            <label for="new_file" class="file-label">
-                <span class="file-label-main">Upload New Data (CSV)</span>
-                <span class="file-label-sub">Required for analysis</span>
-                <input type="file" name="new_file" id="new_file" required>
-            </label>
-            <p id="new-filename" class="filename-display">No file selected</p>
-        </div>
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <ul class="flashes" role="alert">
+            {% for category, message in messages %}
+              <li class="{{ category }}">{{ message }}</li>
+            {% endfor %}
+            </ul>
+          {% endif %}
+        {% endwith %}
 
-        <input type="submit" value="Analyze New Data" class="submit-button" id="analyze-button">
-    </form>
+        <!-- New section for Historic Table Name input -->
+        <section class="historic-table-section" style="margin-top: 2em;">
+            <h2>Select Historic Table</h2>
+            <form method="post" action="{{ url_for('set_historic_table') }}" id="historic-table-form">
+                <label for="historic_table_name">Historic Table Name:</label>
+                <input
+                    type="text"
+                    name="historic_table_name"
+                    id="historic_table_name"
+                    required
+                    value="{{ historic_table_name if historic_table_name else '' }}"
+                    aria-describedby="historic-table-help"
+                />
+                <button type="submit" class="h-submit-button" id="table-button">Set Table</button>
+                <p id="historic-table-help" class="sr-only">Enter the name of the historic table for analysis.</p>
+                <p>        </p>
+            </form>
+        </section>
 
-    <footer>
-        <p>This tool compares your new dataset against historical patterns from PostgreSQL database.</p>
+        <section class="upload-section">
+            <form method="post" action="{{ url_for('analyze_files') }}" enctype="multipart/form-data" id="upload-form">
+                <div class="upload-area" id="upload-drop-area">
+                    <label for="new_file" class="file-label">
+                        <span class="file-label-icon" aria-hidden="true">📄</span>
+                        <span class="file-label-main">Drag & Drop or Click to Upload New Data (CSV)</span>
+                        <span class="file-label-sub">Required for analysis. Max file size: {{ (app.config.MAX_CONTENT_LENGTH / (1024*1024))|int if app and app.config and app.config.MAX_CONTENT_LENGTH else '32' }}MB.</span>
+                    </label>
+                    <input type="file" name="new_file" id="new_file" accept=".csv" required aria-describedby="new-filename-display file-upload-constraints" />
+                    <p id="new-filename-display" class="filename-display" aria-live="polite">No file selected</p>
+                    <p id="file-upload-constraints" class="sr-only">Allowed file type: CSV. Maximum file size: {{ (app.config.MAX_CONTENT_LENGTH / (1024*1024))|int if app and app.config and app.config.MAX_CONTENT_LENGTH else '32' }}MB.</p>
+                </div>
+
+                <button type="submit" class="submit-button" id="analyze-button">
+                    <span id="button-text">Analyze New Data</span>
+                    <span id="loading-spinner" class="spinner" style="display: none;" role="status" aria-label="Loading"></span>
+                </button>
+            </form>
+        </section>
+    </main>
+
+    <footer class="page-footer">
+        <p>© {{ SCRIPT_LOAD_TIME.year if SCRIPT_LOAD_TIME else '' }} Data Drift and Anomaly detection Tool. Compares new data against historical patterns.</p>
     </footer>
 
     <script>
-        document.getElementById('new_file').onchange = function () {
+        document.addEventListener('DOMContentLoaded', function () {
             const fileInput = document.getElementById('new_file');
-            const filenameDisplay = document.getElementById('new-filename');
-            if (fileInput.files.length > 0) {
-                filenameDisplay.textContent = 'Selected: ' + fileInput.files[0].name;
-            } else {
-                filenameDisplay.textContent = 'No file selected';
+            const filenameDisplay = document.getElementById('new-filename-display');
+            const uploadForm = document.getElementById('upload-form');
+            const analyzeButton = document.getElementById('analyze-button');
+            const buttonText = document.getElementById('button-text');
+            const loadingSpinner = document.getElementById('loading-spinner');
+            const uploadDropArea = document.getElementById('upload-drop-area');
+
+            if (fileInput) {
+                fileInput.onchange = function () {
+                    if (fileInput.files.length > 0) {
+                        filenameDisplay.textContent = 'Selected: ' + fileInput.files[0].name;
+                    } else {
+                        filenameDisplay.textContent = 'No file selected';
+                    }
+                };
             }
-        };
-        document.querySelector('form').onsubmit = function() {
-            const button = document.getElementById('analyze-button');
-            button.value = 'Analyzing...';
-            button.disabled = true;
-            return true;
-        };
+
+            if (uploadForm) {
+                uploadForm.onsubmit = function () {
+                    if (!fileInput || !fileInput.files || !fileInput.files.length) {
+                        flashMessage("Please select a CSV file to upload.", "error");
+                        return false;
+                    }
+                    if (analyzeButton) analyzeButton.disabled = true;
+                    if (buttonText) buttonText.textContent = 'Analyzing... Please Wait';
+                    if (loadingSpinner) loadingSpinner.style.display = 'inline-block';
+                    return true;
+                };
+            }
+
+            if (uploadDropArea) {
+                ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                    uploadDropArea.addEventListener(eventName, preventDefaults, false);
+                });
+
+                function preventDefaults(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+
+                ['dragenter', 'dragover'].forEach(eventName => {
+                    uploadDropArea.addEventListener(eventName, () => uploadDropArea.classList.add('highlight-drag'), false);
+                });
+
+                ['dragleave', 'drop'].forEach(eventName => {
+                    uploadDropArea.addEventListener(eventName, () => uploadDropArea.classList.remove('highlight-drag'), false);
+                });
+
+                uploadDropArea.addEventListener('drop', handleDrop, false);
+
+                function handleDrop(e) {
+                    let dt = e.dataTransfer;
+                    let files = dt.files;
+                    if (files.length > 0 && fileInput) {
+                        if (files[0].name.toLowerCase().endsWith('.csv')) {
+                            fileInput.files = files;
+                            fileInput.dispatchEvent(new Event('change'));
+                        } else {
+                            alert("Invalid file type. Only CSV files are allowed via drag & drop.");
+                            if (filenameDisplay) filenameDisplay.textContent = 'Invalid file type. Please select a CSV.';
+                        }
+                    }
+                }
+            }
+
+            function flashMessage(message, type) {
+                const flashesContainer = document.querySelector('.flashes');
+                if (flashesContainer) {
+                    const li = document.createElement('li');
+                    li.className = type;
+                    li.textContent = message;
+                    flashesContainer.appendChild(li);
+                    setTimeout(() => li.remove(), 5000);
+                } else {
+                    alert(message);
+                }
+            }
+        });
     </script>
+
+    <style>
+        .sr-only {
+            position: absolute;
+            width: 1px;
+            height: 1px;
+            padding: 0;
+            margin: -1px;
+            overflow: hidden;
+            clip: rect(0, 0, 0, 0);
+            border: 0;
+        }
+    </style>
 </body>
 </html>

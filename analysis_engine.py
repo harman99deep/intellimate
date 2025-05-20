@@ -2,10 +2,7 @@
 
 import pandas as pd
 import numpy as np
-# from scipy.stats import ks_2samp, chi2_contingency # Removed as not used
-from scipy.stats import iqr as scipy_iqr, ttest_1samp, chisquare
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
+from scipy.stats import iqr as scipy_iqr, ttest_ind, chisquare
 import google.generativeai as genai
 import os
 import warnings
@@ -13,977 +10,819 @@ from dotenv import load_dotenv
 import json
 import re
 from collections import defaultdict
-import psycopg2 # For PostgreSQL
+import psycopg2
+import uuid
+from datetime import datetime, timezone, date
+import decimal
+import html
 
 # --- Configuration ---
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-# DB Config (from .env file)
-DB_HOST = os.getenv("DB_HOST")
-DB_PORT = os.getenv("DB_PORT")
-DB_NAME = os.getenv("DB_NAME")
-DB_USER = os.getenv("DB_USER")
-DB_PASSWORD = os.getenv("DB_PASSWORD")
+DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD = (
+    os.getenv("DB_HOST"), os.getenv("DB_PORT"), os.getenv("DB_NAME"),
+    os.getenv("DB_USER"), os.getenv("DB_PASSWORD")
+)
 HISTORIC_TABLE_NAME = os.getenv("HISTORIC_TABLE_NAME")
+ANALYSIS_LOG_TABLE_NAME = os.getenv("ANALYSIS_LOG_TABLE_NAME", "data_analysis_logs")
 
-# Configure Google Gemini
-USE_GEMINI = False # Default to False
-gemini_model = None # Initialize
+USE_GEMINI = False
+gemini_model = None
 if GEMINI_API_KEY:
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        gemini_model = genai.GenerativeModel('gemini-1.5-flash') # Or your preferred model
-        print("Gemini AI configured successfully.")
+        gemini_model = genai.GenerativeModel('gemini-1.5-flash')
         USE_GEMINI = True
+        print("Gemini AI configured successfully.")
     except Exception as e:
-        print(f"Error configuring Gemini AI: {e}. Explanations will be basic.")
+        print(f"Error configuring Gemini AI: {e}. AI Explanations will be limited.")
 else:
-    print("Gemini API Key not found. Explanations will be basic.")
+    print("Gemini API Key not found. AI Explanations will be limited.")
 
-# Constants
+# --- Constants ---
 ALPHA = 0.05
-IF_CONTAMINATION = 'auto'
-Z_SCORE_THRESHOLD = 3
-IQR_MULTIPLIER = 1.5
-MAX_ANOMALIES_TO_LLM_SNIPPET = 5
-MAX_DRIFT_COLS_TO_LLM_SUMMARY = 7
-ID_COLUMN_SUBSTRINGS = ['id', 'key', 'uuid', 'identifier', 'no', 'num', 'code', 'token', 'number'] # Expanded
-ID_UNIQUENESS_THRESHOLD = 0.90
+Z_SCORE_THRESHOLD = 3.0
+MAX_ROWS_FOR_LLM_DATA_PREVIEW = 5
+MAX_ANOMALY_ROWS_TO_SHOW_LLM = 10 
+MAX_ANOMALY_ROWS_IN_REPORT_SNIPPET = 5 
+MAX_FULL_ANOMALY_ROWS_IN_REPORT = 50 
+HISTORIC_SAMPLE_ROWS_FOR_CONTEXT = 50
+PREVIEW_TABLE_MAX_ROWS = 10
+
+# --- Anomaly Types ---
+ANOMALY_TYPE_MISSING = "missing"
+ANOMALY_TYPE_INCORRECT_FORMAT = "incorrect_format"
+ANOMALY_TYPE_DATA_MISMATCH = "data_mismatch"
+ANOMALY_TYPE_LOCATION_MISMATCH = "location_mismatch"
+
+# Categories for CSS cell/card styling (simplified)
+ANOMALY_CATEGORY_MISSING = "missing"  # For missing or null values
+ANOMALY_CATEGORY_FORMAT = "format"    # For format/validation issues
+ANOMALY_CATEGORY_MISMATCH = "mismatch" # For data mismatches and inconsistencies
+ANOMALY_CATEGORY_SUMMARY = "summary"   # For the summary flags column
+
+ANOMALY_TYPE_TO_CSS_CATEGORY_MAP = {
+    ANOMALY_TYPE_MISSING: ANOMALY_CATEGORY_MISSING,
+    ANOMALY_TYPE_INCORRECT_FORMAT: ANOMALY_CATEGORY_FORMAT,
+    ANOMALY_TYPE_DATA_MISMATCH: ANOMALY_CATEGORY_MISMATCH,
+    ANOMALY_TYPE_LOCATION_MISMATCH: ANOMALY_CATEGORY_MISMATCH,
+}
+
+def get_anomaly_css_category(anomaly_type_str):
+    return ANOMALY_TYPE_TO_CSS_CATEGORY_MAP.get(anomaly_type_str, "unknown")
 
 warnings.filterwarnings('ignore', category=FutureWarning)
-warnings.filterwarnings('ignore', category=UserWarning)
+warnings.filterwarnings('ignore', category=UserWarning, module='sklearn')
 warnings.filterwarnings('ignore', category=pd.errors.SettingWithCopyWarning)
-warnings.filterwarnings('ignore', category=RuntimeWarning)
+warnings.filterwarnings('ignore', category=RuntimeWarning, module='scipy.stats._stats_py')
 
-# --- Formatting Helper ---
-def format_value_for_display(value):
-    if pd.isna(value):
-        return "N/A"
-    if isinstance(value, float) and value.is_integer():
-        return str(int(value))
-    if isinstance(value, (int, np.integer)):
-        return str(value)
-    if isinstance(value, (float, np.floating)):
-        return f"{value:.2f}"
-    return str(value)
+def _to_native_py_type(value):
+    if pd.isna(value): return None
+    if isinstance(value, (int, float, bool, str, type(None))): return value
+    if isinstance(value, (np.integer, np.int64, np.int32, np.int16, np.int8)): return int(value)
+    if isinstance(value, (np.floating, np.float64, np.float32)):
+        if pd.isna(value): return None
+        if value == int(value): return int(value)
+        return float(value)
+    if isinstance(value, np.bool_): return bool(value)
+    if isinstance(value, (datetime, pd.Timestamp, date)): return value.isoformat()
+    if isinstance(value, uuid.UUID): return str(value)
+    if isinstance(value, decimal.Decimal):
+        if value % 1 == 0: return int(value)
+        return float(value)
+    if isinstance(value, np.ndarray): return [_to_native_py_type(x) for x in value.tolist()]
+    try: return str(value)
+    except Exception: return f"Unconvertible_Type_{type(value).__name__}"
 
-# --- Database Helper ---
-def get_db_connection():
-    if not all([DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, HISTORIC_TABLE_NAME]):
-        print("Database environment variables (HOST, PORT, NAME, USER, PASSWORD, TABLE_NAME) not fully set. DB operations will be skipped.")
-        return None
+def _sanitize_for_json(item):
+    if isinstance(item, dict):
+        return {
+            (str(_to_native_py_type(k)) if not isinstance(k, (str, int, float, bool, type(None))) else k): _sanitize_for_json(v)
+            for k, v in item.items()
+        }
+    elif isinstance(item, list):
+        return [_sanitize_for_json(i) for i in item]
+    return _to_native_py_type(item)
+
+def format_value_for_display(native):
+    """Format a value for display in the HTML report, safely escaping HTML but not quotes."""
+    if native is None:
+        return "NULL"
+    if isinstance(native, (int, float)):
+        return str(native)
+    return html.escape(str(native), quote=False)  # Don't escape quotes, but still escape other HTML characters
+
+def format_data_for_llm(df, max_rows=MAX_ROWS_FOR_LLM_DATA_PREVIEW):
+    if df is None or df.empty:
+        return "No data sample to display."
     try:
-        conn = psycopg2.connect(
-            host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD
-        )
-        print("Successfully connected to PostgreSQL database.")
-        return conn
-    except psycopg2.Error as e:
-        print(f"Error connecting to PostgreSQL database: {e}")
-        return None
+        df_to_format = df.copy()
+        if 'original_index' in df_to_format.columns:
+            df_to_format['original_index'] = df_to_format['original_index'].apply(_to_native_py_type).astype(str)
+        
+        df_display = df_to_format.head(max_rows).copy()
+        for col in df_display.columns:
+            df_display[col] = df_display[col].apply(lambda x: "NULL" if pd.isna(x) else str(_to_native_py_type(x)))
+        try:
+            import tabulate
+            return df_display.to_markdown(index=('original_index' in df_display.columns), tablefmt="pipe")
+        except ImportError:
+            return df_display.to_string(index=('original_index' in df_display.columns))
+    except Exception as e:
+        print(f"Error formatting data for LLM (format_data_for_llm): {e}")
+        return f"Error formatting data for LLM: {str(e)}"
 
-def fetch_historic_stats_from_db(db_conn, table_name, columns_info):
-    if not db_conn or not table_name:
-        print("DB connection or table name missing for fetching historic stats.")
-        return {}
+def get_preview_table_html(df, title="Data Preview", max_rows=PREVIEW_TABLE_MAX_ROWS, table_id=None, categorized_anomalies_for_preview=None):
+    if df is None or df.empty:
+        return f"<div class='preview-card'><p class='preview-title'>{title}: No data to display.</p></div>"
+    try:
+        df_display_orig = df.head(max_rows).copy()
+        
+        orig_idx_col_name_in_df = None
+        if 'original_index' in df_display_orig.columns:
+            df_display_with_hidden_idx = df_display_orig.copy()
+            orig_idx_col_name_in_df = 'original_index'
+        elif df_display_orig.index.name == 'original_index':
+            df_display_with_hidden_idx = df_display_orig.reset_index()
+            orig_idx_col_name_in_df = 'original_index'
+        else: 
+            df_display_with_hidden_idx = df_display_orig.reset_index().rename(columns={'index': 'original_index_temp'})
+            orig_idx_col_name_in_df = 'original_index_temp'
+            # print(f"Warning: 'original_index' was not found directly for preview table '{title}'. Using temporary '{orig_idx_col_name_in_df}'.")
+        
+        df_display_for_html = df_display_with_hidden_idx.drop(columns=[orig_idx_col_name_in_df], errors='ignore')
 
-    historic_stats = {}
+        if categorized_anomalies_for_preview:
+            df_display_for_html['anomaly_flags'] = "No anomalies detected" 
+            for display_row_idx, hidden_row_series in df_display_with_hidden_idx.iterrows():
+                original_idx_native = _to_native_py_type(hidden_row_series.get(orig_idx_col_name_in_df))
+                if original_idx_native is not None and original_idx_native in categorized_anomalies_for_preview:
+                    anomalies = categorized_anomalies_for_preview[original_idx_native]
+                    if anomalies:
+                        # For flags column, use broader categories if desired, or stick to CSS categories.
+                        # Let's use CSS categories for flags to align with potential cell highlights.
+                        types = sorted(list(set(get_anomaly_css_category(a['type']) for a in anomalies)))
+                        if display_row_idx in df_display_for_html.index:
+                             df_display_for_html.loc[display_row_idx, 'anomaly_flags'] = ", ".join(t.replace("-", " ").title() for t in types)
+
+        html_rows_content = []
+        header_cols = df_display_for_html.columns
+        header_html = "<tr>" + "".join(f"<th>{html.escape(str(col))}</th>" for col in header_cols) + "</tr>"
+
+        for display_row_idx, row_series_for_html in df_display_for_html.iterrows():
+            original_row_idx_native = _to_native_py_type(df_display_with_hidden_idx.loc[display_row_idx, orig_idx_col_name_in_df])
+            html_row = "<tr>"
+            for col_name in header_cols:
+                cell_value = row_series_for_html.get(col_name)
+                cell_classes = ["preview-cell"]
+                
+                # Skip anomaly styling for city column
+                if col_name != 'city' and categorized_anomalies_for_preview and original_idx_native is not None and original_idx_native in categorized_anomalies_for_preview:
+                    for anomaly in categorized_anomalies_for_preview[original_idx_native]:
+                        anomaly_col = anomaly.get('column')
+                        llm_details = anomaly.get('details', {}) 
+                        
+                        applies_to_col = False
+                        if anomaly_col == col_name: applies_to_col = True
+                        elif isinstance(llm_details, dict):
+                            if isinstance(llm_details.get('involved_columns'), dict) and col_name in llm_details['involved_columns']: applies_to_col = True
+                            elif isinstance(llm_details.get('related_columns'), list) and col_name in llm_details['related_columns']: applies_to_col = True
+                        
+                        if applies_to_col:
+                            anomaly_category_for_cell = get_anomaly_css_category(anomaly['type']) # Use CSS category for cell class
+                            cell_classes.append(f"cell-anomaly-{anomaly_category_for_cell}")
+                
+                formatted_val = format_value_for_display(cell_value)
+                if col_name == 'anomaly_flags' and formatted_val != "No anomalies detected": 
+                    cell_classes.append("cell-anomaly-summary")
+
+                html_row += f"<td class='{' '.join(sorted(list(set(cell_classes))))}'>{formatted_val}</td>"
+            html_row += "</tr>"
+            html_rows_content.append(html_row)
+
+        table_id_attr = f"id='{table_id}'" if table_id else ""
+        final_html = f"<div class='preview-card'><p class='preview-title'>{title}</p>"
+        final_html += f"<div class='table-responsive-wrapper'><table {table_id_attr} class='preview-table table table-striped table-sm table-hover'>"
+        final_html += f"<thead>{header_html}</thead><tbody>{''.join(html_rows_content)}</tbody></table></div></div>"
+        return final_html
+    except Exception as e:
+        import traceback
+        print(f"Error in get_preview_table_html for {title}: {e}\n{traceback.format_exc()}")
+        return f"<div class='preview-card error'><p class='preview-title'>Error generating preview for {title}</p><p>{html.escape(str(e))}</p></div>"
+
+def get_db_connection():
+    if not all([DB_HOST, DB_NAME, DB_USER, DB_PASSWORD]): return None
+    try: return psycopg2.connect(host=DB_HOST, port=DB_PORT, dbname=DB_NAME, user=DB_USER, password=DB_PASSWORD)
+    except psycopg2.Error as e: print(f"DB Connection Error: {e}"); return None
+
+def execute_db_query(db_conn, query, params=None, fetch_one=False, fetch_all=False):
+    if not db_conn: return None
     try:
         with db_conn.cursor() as cursor:
-            for col_name, col_type in columns_info.items():
-                try:
-                    safe_col_name = f'"{col_name.replace("\"", "\"\"")}"'
-                    if col_type == 'numerical':
-                        query = f"""
-                        SELECT
-                            AVG(CAST({safe_col_name} AS NUMERIC)), STDDEV(CAST({safe_col_name} AS NUMERIC)),
-                            PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY CAST({safe_col_name} AS NUMERIC)),
-                            PERCENTILE_CONT(0.50) WITHIN GROUP (ORDER BY CAST({safe_col_name} AS NUMERIC)),
-                            PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY CAST({safe_col_name} AS NUMERIC)),
-                            MIN(CAST({safe_col_name} AS NUMERIC)), MAX(CAST({safe_col_name} AS NUMERIC)),
-                            SUM(CASE WHEN {safe_col_name} IS NULL THEN 1 ELSE 0 END), COUNT(*)
-                        FROM "{table_name}";
-                        """
-                        cursor.execute(query)
-                        stats_row = cursor.fetchone()
-                        if stats_row:
-                            q1_val, q3_val = stats_row[2], stats_row[4]
-                            historic_stats[col_name] = {
-                                'mean': stats_row[0], 'std': stats_row[1], 'q1': q1_val, 'median': stats_row[3], 'q3': q3_val,
-                                'min': stats_row[5], 'max': stats_row[6],
-                                'iqr': (q3_val - q1_val) if q1_val is not None and q3_val is not None else None,
-                                'null_count': stats_row[7], 'total_count': stats_row[8]
-                            }
-                    elif col_type == 'categorical': # This now includes former "text" columns
-                        query = f"SELECT CAST({safe_col_name} AS TEXT), COUNT(*) FROM \"{table_name}\" GROUP BY CAST({safe_col_name} AS TEXT);"
-                        cursor.execute(query)
-                        value_counts_list = cursor.fetchall()
-                        if value_counts_list: # Ensure there are counts
-                             historic_stats[col_name] = {'value_counts': dict(value_counts_list),
-                                                         'null_count': None, 'total_count': None} # Add placeholders for consistency
-                             # Attempt to get null/total counts for categoricals too if possible, or derive from value_counts sum
-                             query_cat_meta = f"""
-                             SELECT SUM(CASE WHEN {safe_col_name} IS NULL THEN 1 ELSE 0 END), COUNT(*)
-                             FROM "{table_name}";
-                             """
-                             cursor.execute(query_cat_meta)
-                             meta_row = cursor.fetchone()
-                             if meta_row:
-                                 historic_stats[col_name]['null_count'] = meta_row[0]
-                                 historic_stats[col_name]['total_count'] = meta_row[1]
-                        else:
-                             historic_stats[col_name] = {'value_counts': {}, 'null_count': 0, 'total_count': 0, 'error': 'No categories found or all nulls'}
+            cursor.execute(query, params)
+            if fetch_one: return cursor.fetchone()
+            if fetch_all: return cursor.fetchall()
+            db_conn.commit(); return True
+    except psycopg2.Error as e: print(f"DB Query Error: {e} (Query: {query[:100]}...)"); db_conn.rollback(); return None
 
+_stats_cache = {}
+def _get_cached_or_compute(key, compute_fn, *args, **kwargs):
+    if key not in _stats_cache: _stats_cache[key] = compute_fn(*args, **kwargs)
+    return _stats_cache[key]
 
-                except psycopg2.Error as e:
-                    print(f"DB Error fetching stats for column '{col_name}': {e}")
-                    db_conn.rollback(); historic_stats[col_name] = {'error': f"DB Error: {e}"}
-                except Exception as e:
-                    print(f"Unexpected error fetching stats for column '{col_name}': {e}")
-                    historic_stats[col_name] = {'error': f"Unexpected Error: {e}"}
-    except psycopg2.Error as e:
-        print(f"DB Error during historic stats fetching process: {e}")
-        return {'db_process_error': str(e)}
-    return historic_stats
+def ensure_log_table_exists(db_conn):
+    query = f"""CREATE TABLE IF NOT EXISTS "{ANALYSIS_LOG_TABLE_NAME}" (log_id UUID PRIMARY KEY, run_timestamp TIMESTAMPTZ NOT NULL, status VARCHAR(100) NOT NULL, error_message TEXT, new_data_filename VARCHAR(255), analysis_summary TEXT);"""
+    execute_db_query(db_conn, query)
 
-# --- Helper Functions ---
-def load_new_data(new_path):
+def log_analysis_run_db(db_conn, log_id, status, error_msg=None, filename=None, summary=None):
+    query = f"""INSERT INTO "{ANALYSIS_LOG_TABLE_NAME}" (log_id, run_timestamp, status, error_message, new_data_filename, analysis_summary) VALUES (%s, %s, %s, %s, %s, %s) ON CONFLICT (log_id) DO UPDATE SET run_timestamp = EXCLUDED.run_timestamp, status = EXCLUDED.status, error_message = EXCLUDED.error_message, new_data_filename = EXCLUDED.new_data_filename, analysis_summary = EXCLUDED. ;"""
+    params = (str(log_id), datetime.now(timezone.utc), str(status)[:100], str(error_msg)[:10000] if error_msg else None, str(filename)[:255] if filename else None, json.dumps(_sanitize_for_json(summary))[:20000] if summary else None)
+    execute_db_query(db_conn, query, params)
+
+def fetch_historic_data(db_conn, table_name, num_sample_rows=HISTORIC_SAMPLE_ROWS_FOR_CONTEXT):
+    if not db_conn or not table_name: return None, pd.DataFrame(), {}
+    total_rows_res = execute_db_query(db_conn, f'SELECT COUNT(*) FROM "{table_name}";', fetch_one=True)
+    historic_total_rows = total_rows_res[0] if total_rows_res else None
+    sample_df = pd.DataFrame(); schema_info_rows = execute_db_query(db_conn, f"SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s;", (table_name,), fetch_all=True)
+    if not schema_info_rows: print(f"Could not retrieve schema for historic table '{table_name}'."); return historic_total_rows, sample_df, {}
+    db_column_names = [row[0] for row in schema_info_rows]; safe_select_cols = ", ".join([f'"{col}"' for col in db_column_names])
+    sample_rows_query = f'SELECT {safe_select_cols} FROM "{table_name}" ORDER BY RANDOM() LIMIT %s;'; sample_rows = execute_db_query(db_conn, sample_rows_query, (num_sample_rows,), fetch_all=True)
+    if sample_rows:
+        sample_df = pd.DataFrame(sample_rows, columns=db_column_names)
+        for col_name, col_type_str in schema_info_rows:
+            if col_name in sample_df.columns:
+                if any(t in col_type_str for t in ['integer', 'numeric', 'real', 'double precision', 'smallint', 'bigint']): sample_df[col_name] = pd.to_numeric(sample_df[col_name], errors='coerce')
+                elif any(t in col_type_str for t in ['timestamp', 'date']): sample_df[col_name] = pd.to_datetime(sample_df[col_name], errors='coerce')
+    historic_column_stats = {}
+    for col_name, col_type_str in schema_info_rows:
+        safe_col = f'"{col_name}"'; stats = {'type': col_type_str}
+        null_res = execute_db_query(db_conn, f"SELECT SUM(CASE WHEN {safe_col} IS NULL THEN 1 ELSE 0 END), COUNT(*) FROM \"{table_name}\";", fetch_one=True)
+        if null_res: stats.update({'null_count': _to_native_py_type(null_res[0]), 'total_in_col': _to_native_py_type(null_res[1])})
+        if any(t in col_type_str for t in ['integer', 'numeric', 'real', 'double precision']):
+            num_res = execute_db_query(db_conn, f"SELECT AVG(CAST({safe_col} AS NUMERIC)), STDDEV_SAMP(CAST({safe_col} AS NUMERIC)), MIN(CAST({safe_col} AS NUMERIC)), MAX(CAST({safe_col} AS NUMERIC)) FROM \"{table_name}\";", fetch_one=True)
+            if num_res: stats.update({'mean': _to_native_py_type(num_res[0]), 'std': _to_native_py_type(num_res[1]), 'min': _to_native_py_type(num_res[2]), 'max': _to_native_py_type(num_res[3])})
+        else: 
+            cat_res = execute_db_query(db_conn, f"SELECT CAST({safe_col} AS TEXT), COUNT(*) FROM \"{table_name}\" GROUP BY CAST({safe_col} AS TEXT) ORDER BY COUNT(*) DESC LIMIT 5;", fetch_all=True)
+            if cat_res: stats['top_values'] = {_to_native_py_type(k): _to_native_py_type(v) for k,v in cat_res}
+        historic_column_stats[col_name] = stats
+    return historic_total_rows, sample_df, _sanitize_for_json(historic_column_stats)
+
+def load_new_data(filepath):
     try:
-        if not new_path or not new_path.lower().endswith('.csv'):
-             raise ValueError("Invalid file type or path for new data. Please upload a CSV file.")
-        df_new = pd.read_csv(new_path)
-        if df_new.empty: raise ValueError("The new dataset CSV file is empty.")
-        print(f"Loaded new data: {df_new.shape} from {new_path}")
-        return df_new
-    except FileNotFoundError: raise ValueError(f"New data file not found: {new_path}")
-    except pd.errors.EmptyDataError: raise ValueError("New data CSV file is empty.")
-    except Exception as e: raise RuntimeError(f"Unexpected error during new data loading: {e}")
-
-def identify_column_types_and_ids(df):
-    numerical_cols, categorical_cols, id_cols = [], [], []
-    potential_id_cols = []
-
-    for col in df.columns:
-        if is_potential_id_column(col, df[col]):
-            potential_id_cols.append(col)
-        elif pd.api.types.is_numeric_dtype(df[col]):
-            numerical_cols.append(col)
-        # All non-numeric, non-ID columns are treated as categorical for drift/summary purposes
-        # The distinction between "text" and "categorical" is less critical for the current analysis suite
-        # if not explicitly used for different processing paths (like NLP).
-        elif pd.api.types.is_object_dtype(df[col]) or pd.api.types.is_categorical_dtype(df[col]) or pd.api.types.is_string_dtype(df[col]):
-            categorical_cols.append(col)
-        else: # Other specific types (datetime, boolean if not handled above) could be added
-            print(f"Column '{col}' has unhandled dtype {df[col].dtype}, treating as categorical for now.")
-            categorical_cols.append(col)
-
-
-    for col in potential_id_cols:
-        id_cols.append(col)
-        if col in numerical_cols: numerical_cols.remove(col)
-        if col in categorical_cols: categorical_cols.remove(col)
-
-    print(f"Identified Column Types: Num: {numerical_cols}, Cat (incl. Text-like): {categorical_cols}, IDs: {id_cols}")
-    return numerical_cols, categorical_cols, id_cols
-
-
-def handle_missing_values(df, numerical_strategy='median', categorical_strategy='mode'):
-    df_filled = df.copy()
-    for col in df_filled.columns:
-        if df_filled[col].isnull().any():
-            if pd.api.types.is_numeric_dtype(df_filled[col]):
-                fill_value = df_filled[col].median() if numerical_strategy == 'median' else df_filled[col].mean()
-                if pd.isnull(fill_value): fill_value = 0 # Fallback
-                df_filled[col].fillna(fill_value, inplace=True)
-            elif pd.api.types.is_object_dtype(df_filled[col]) or pd.api.types.is_categorical_dtype(df_filled[col]):
-                modes = df_filled[col].mode()
-                fill_value = modes[0] if not modes.empty else 'Missing_Value_Filled'
-                df_filled[col].fillna(fill_value, inplace=True)
-    return df_filled
-
-def get_preview_table_html(df, title="Data Preview"):
-    if df is None or df.empty: return f"<p>{title}: No data to display.</p>"
-    try:
-        df_display = df.head(10).copy()
-        for col in df_display.select_dtypes(include=[np.number]).columns:
-            df_display[col] = df_display[col].apply(format_value_for_display)
-        return df_display.to_html(classes='preview-table', index=True, border=0, na_rep='NA', escape=False)
-    except Exception as e: return f"<p>Error generating preview for {title}: {e}</p>"
-
-def is_potential_id_column(col_name, series):
-    if not isinstance(series, pd.Series): return False
-    col_name_lower = str(col_name).lower()
-    if any(sub in col_name_lower for sub in ID_COLUMN_SUBSTRINGS): return True
-    try:
-        if len(series) == 0: return False
-        is_mostly_int_or_string_like = False
-        # Check if dtype is numeric and all non-NaN values are integers
-        if pd.api.types.is_numeric_dtype(series.dtype):
-            non_na_numeric = series.dropna()
-            if not non_na_numeric.empty and non_na_numeric.apply(lambda x: x == int(x)).all():
-                is_mostly_int_or_string_like = True
-        elif pd.api.types.is_string_dtype(series.dtype) or series.dtype == 'object':
-            is_mostly_int_or_string_like = True
-
-        if is_mostly_int_or_string_like:
-            non_na_series = series.dropna()
-            if len(non_na_series) > 10 : # Only consider uniqueness for reasonably sized non-null series
-                unique_ratio_non_na = non_na_series.nunique() / len(non_na_series)
-                if unique_ratio_non_na >= ID_UNIQUENESS_THRESHOLD:
-                    return True
-            # Fallback for columns with many NaNs or shorter series, check overall uniqueness
-            if len(series) > 0:
-                 unique_ratio_overall = series.nunique(dropna=False) / len(series)
-                 # For shorter columns or high NaN columns, a very high unique ratio is still a strong ID signal
-                 if (len(series) <=10 and unique_ratio_overall == 1.0) or \
-                    (unique_ratio_overall >= ID_UNIQUENESS_THRESHOLD + 0.05) : # Stricter if using dropna=False
-                     return True
-    except Exception as e:
-        print(f"Warning: Could not assess ID-ness for column '{col_name}': {e}")
-    return False
-
-def perform_id_column_checks(df_new, id_cols):
-    id_checks_results = {}
-    for col in id_cols:
-        series = df_new[col]
-        res = {
-            "column_name": col, "data_type": str(series.dtype),
-            "total_records": int(len(series)), "missing_values": int(series.isnull().sum()),
-            "missing_percentage": f"{(series.isnull().sum() / len(series) * 100) if len(series) > 0 else 0:.2f}%",
-            "unique_values_incl_na": int(series.nunique(dropna=False)),
-            "unique_values_excl_na": int(series.nunique(dropna=True)),
-        }
-        non_null_series = series.dropna()
-        if not non_null_series.empty:
-            res["duplicate_values_among_non_null"] = int(len(non_null_series) - res["unique_values_excl_na"])
-            res["all_unique_among_non_null"] = (res["duplicate_values_among_non_null"] == 0)
-            if pd.api.types.is_string_dtype(non_null_series.dtype) or non_null_series.dtype == 'object':
-                lengths = non_null_series.astype(str).str.len()
-                if not lengths.empty:
-                    res["most_common_length"] = int(lengths.mode()[0]) if not lengths.mode().empty else 'N/A'
-                    res["min_length"] = int(lengths.min()); res["max_length"] = int(lengths.max())
-                    res["consistent_length"] = (res["min_length"] == res["max_length"])
-        else:
-            res.update({"duplicate_values_among_non_null": 0, "all_unique_among_non_null": True})
-        id_checks_results[col] = res
-    return id_checks_results
-
-def calculate_new_numerical_summaries(df_new, numerical_cols):
-    summaries = {}
-    for col in numerical_cols:
-        new_col_series = df_new[col].dropna().astype(float)
-        summary = {k: np.nan for k in ['new_min', 'new_max', 'new_iqr', 'new_mean', 'new_std', 'new_q1', 'new_median', 'new_q3']}
-        try:
-            if not new_col_series.empty:
-                summary.update({
-                    'new_min': new_col_series.min(), 'new_max': new_col_series.max(),
-                    'new_iqr': scipy_iqr(new_col_series) if len(new_col_series) > 0 else np.nan,
-                    'new_mean': new_col_series.mean(), 'new_std': new_col_series.std(),
-                    'new_q1': new_col_series.quantile(0.25), 'new_median': new_col_series.median(),
-                    'new_q3': new_col_series.quantile(0.75)
-                })
-            summary['new_null_count'] = df_new[col].isnull().sum()
-            summary['new_total_count'] = len(df_new[col])
-            summaries[col] = summary
-        except Exception as e:
-            print(f"Warning: Could not calculate summary for new data column '{col}': {e}")
-            summaries[col] = {'error': str(e), 'new_null_count': df_new[col].isnull().sum(), 'new_total_count': len(df_new[col])}
-    return summaries
-
-def calculate_null_value_comparison(df_new, historic_stats_all_cols, all_analyzed_cols):
-    null_comparison = {}
-    for col in all_analyzed_cols:
-        new_null_count = df_new[col].isnull().sum()
-        new_total_count = len(df_new[col]) if col in df_new else 0
-        new_null_ratio = (new_null_count / new_total_count) if new_total_count > 0 else 0.0
-
-        hist_stats = historic_stats_all_cols.get(col, {})
-        hist_null_count = hist_stats.get('null_count')
-        hist_total_count = hist_stats.get('total_count')
-        hist_null_ratio = None
-
-        if hist_null_count is not None and hist_total_count is not None and hist_total_count > 0:
-            hist_null_ratio = float(hist_null_count) / float(hist_total_count)
-
-        change_info = "N/A (no historic data for comparison)"
-        if hist_null_ratio is not None:
-            diff = new_null_ratio - hist_null_ratio
-            change_info = f"{diff:+.2%}"
-            if abs(diff) > 0.10: # Threshold for "notable"
-                 change_info += " (Notable Increase)" if diff > 0 else " (Notable Decrease)"
-        null_comparison[col] = {
-            "new_null_count": new_null_count, "new_null_percentage": f"{new_null_ratio:.2%}",
-            "historic_null_count": format_value_for_display(hist_null_count),
-            "historic_null_percentage": f"{hist_null_ratio:.2%}" if hist_null_ratio is not None else "N/A",
-            "change_in_null_percentage_points": change_info
-        }
-    return null_comparison
-
-# --- Drift Detection Functions ---
-def detect_numerical_drift_vs_stats(series_new, historic_col_stats, column_name, alpha=ALPHA):
-    default_no_drift = {"column": column_name, "type": "Numerical", "test": "Mean Comparison (vs Historic Stats)",
-                        "drift_detected": False, "simple_result": "Comparison N/A or insufficient data", "drift_score": 0, "confidence": 0,
-                        "p_value": 1.0, "statistic": None, "simple_test_name": "Average Value Check"}
-    if not historic_col_stats or 'mean' not in historic_col_stats or 'std' not in historic_col_stats \
-            or pd.isnull(historic_col_stats['mean']) or pd.isnull(historic_col_stats['std']):
-        default_no_drift["simple_result"] = "Historic mean/std stats unavailable or incomplete"
-        # print(f"Debug: No historic mean/std for {column_name}. Stats: {historic_col_stats}")
-        return default_no_drift
-    series_new_na = series_new.dropna()
-    if len(series_new_na) < 5: # Min sample size for t-test
-        default_no_drift["simple_result"] = "Insufficient new non-null data points for comparison"
-        return default_no_drift
-    hist_mean, hist_std = historic_col_stats['mean'], historic_col_stats['std']
-    p_value, drift_detected, simple_result, statistic = 1.0, False, "Mean is consistent with historic", None
-    if hist_std == 0: # historic_std can be 0 if all historic values were the same
-        new_mean = series_new_na.mean()
-        if not np.isclose(new_mean, hist_mean):
-            drift_detected = True; p_value = 0.0; simple_result = "Mean changed significantly (historic data had no variance)"
-        else: simple_result = "Mean consistent (historic data had no variance)"
-    else:
-        try:
-            statistic, p_value = ttest_1samp(series_new_na, hist_mean, nan_policy='omit')
-            drift_detected = p_value < alpha
-            simple_result = "Mean changed significantly from historic" if drift_detected else "Mean is consistent with historic"
-        except Exception as e:
-            print(f"Warning: t-test failed for {column_name}: {e}. Defaulting to no drift.")
-            simple_result = f"Mean comparison test failed ({e})"
-    return {"column": column_name, "type": "Numerical", "test": "Mean Comparison (vs Historic Stats)",
-            "statistic": statistic, "p_value": p_value, "drift_score": 1 - p_value if p_value is not None else 0,
-            "drift_detected": drift_detected, "confidence": 1 - p_value if p_value is not None else 0,
-            "simple_result": simple_result, "simple_test_name": "Average Value Check"}
-
-def detect_categorical_drift_vs_stats(series_new, historic_col_stats, column_name, alpha=ALPHA):
-    default_no_drift = {"column": column_name, "type": "Categorical", "test": "Category Proportion Test",
-                        "drift_detected": False, "simple_result": "Comparison N/A or insufficient data", "drift_score": 0, "confidence": 0,
-                        "p_value": 1.0, "statistic": None, "simple_test_name": "Category Popularity Check"}
-
-    if not historic_col_stats or 'value_counts' not in historic_col_stats or not isinstance(historic_col_stats['value_counts'], dict) or not historic_col_stats['value_counts']:
-        default_no_drift["simple_result"] = "Historic category counts (value_counts) unavailable or empty"
-        # print(f"Debug: No historic value_counts for {column_name}. Stats: {historic_col_stats}")
-        return default_no_drift
-
-    series_new_str = series_new.astype(str).fillna('__NaN__') # Ensure consistent NaN representation
-    new_counts_pd = series_new_str.value_counts()
-    hist_counts_dict = historic_col_stats['value_counts']
-    hist_counts_pd = pd.Series(hist_counts_dict).astype(float)
-
-    if new_counts_pd.empty and hist_counts_pd.empty: default_no_drift["simple_result"] = "No data in new or historic counts"; return default_no_drift
-    if new_counts_pd.empty: default_no_drift["simple_result"] = "No data in new counts to compare"; return default_no_drift
-    # hist_counts_pd.empty was checked by historic_col_stats['value_counts'] check earlier
-
-    all_categories = sorted(list(set(new_counts_pd.index) | set(hist_counts_pd.index)))
-    new_total, hist_total = new_counts_pd.sum(), hist_counts_pd.sum()
-
-    if new_total < 5 : # Chi-square not reliable with very small new sample
-        default_no_drift["simple_result"] = "Insufficient new data points for category proportion test"
-        return default_no_drift
-    # hist_total should be >0 if hist_counts_pd was not empty
-
-    observed_freq = new_counts_pd.reindex(all_categories, fill_value=0).astype(float)
-    expected_props = hist_counts_pd.reindex(all_categories, fill_value=0) / hist_total
-    expected_freq = expected_props * new_total
-
-    # Filter out categories where expected frequency is effectively zero for chi-square
-    valid_mask = (expected_freq > 1e-9) # Small epsilon for float comparison
-    observed_final, expected_final = observed_freq[valid_mask], expected_freq[valid_mask]
-
-    if len(observed_final) < 1: default_no_drift["simple_result"] = "No comparable categories with expected historic counts after filtering"; return default_no_drift
-    if len(observed_final) == 1 and len(all_categories) > 1 and observed_final.sum() < new_total: # Only one category has expected counts, others are new/unexpected
-        return {**default_no_drift, "drift_detected": True, "simple_result": "Major shift: New categories appeared or historic ones disappeared", "drift_score": 1.0, "confidence": 1.0, "p_value": 0.0}
-
-    # Ensure no zero expected frequencies passed to chisquare if they still exist (should be caught by mask)
-    expected_final = np.maximum(expected_final, 1e-9) # Prevent zero division if any slip through
-
-    try:
-        # Check degrees of freedom
-        ddof = len(observed_final) -1
-        if ddof < 1:
-            default_no_drift["simple_result"] = "Insufficient categories for reliable Chi-square test (dof < 1)"
-            return default_no_drift
-
-        chi2_stat, p_value = chisquare(f_obs=observed_final, f_exp=expected_final)
-        drift_detected = p_value < alpha
-        result_interpretation = "Category proportions changed significantly from historic" if drift_detected else "Category proportions consistent with historic"
-        if np.any(expected_final < 5): # Standard Chi-square warning
-            print(f"Warning: Low expected frequency (<5) in Chi2 test for '{column_name}'. P-value may be less reliable.")
-            result_interpretation += " (Note: some expected counts were low, p-value less reliable)"
-        return {"column": column_name, "type": "Categorical", "test": "Category Proportion Test",
-                "statistic": chi2_stat, "p_value": p_value, "drift_score": 1 - p_value,
-                "drift_detected": drift_detected, "confidence": 1 - p_value,
-                "simple_result": result_interpretation, "simple_test_name": "Category Popularity Check"}
-    except ValueError as e:
-        print(f"Error during Chi2 G.O.F test calculation for '{column_name}': {e}.")
-        default_no_drift["simple_result"] = f"Category proportion test failed ({e})"; return default_no_drift
-    except Exception as e:
-         print(f"Unexpected error during Chi2 G.O.F test for '{column_name}': {e}")
-         default_no_drift["simple_result"] = f"Unexpected error in proportion test ({e})"; return default_no_drift
-
-# --- Anomaly Detection Functions ---
-def detect_anomalies_isolation_forest(df_historic_sample, df_new, numerical_cols_for_if, contamination=IF_CONTAMINATION, random_state=42):
-    empty_if_df = pd.DataFrame(columns=['index_in_new', 'anomaly_score', 'is_anomaly', 'severity_score'])
-    if df_historic_sample is None or df_historic_sample.empty:
-        print("Skipping Isolation Forest: No historic sample data provided."); return empty_if_df
-    if not numerical_cols_for_if:
-        print("Skipping Isolation Forest: No numerical columns provided for IF."); return empty_if_df
-
-    common_num_cols_for_if = [col for col in numerical_cols_for_if if col in df_historic_sample.columns and col in df_new.columns]
-    if not common_num_cols_for_if:
-        print("Skipping Isolation Forest: No common numerical columns between historic sample and new data for IF."); return empty_if_df
-
-    df_hist_num = df_historic_sample[common_num_cols_for_if].copy()
-    df_new_num = df_new[common_num_cols_for_if].copy()
-    df_hist_filled, _ = handle_missing_values(df_hist_num, numerical_strategy='median')
-    df_new_filled, _ = handle_missing_values(df_new_num, numerical_strategy='median')
-
-    if df_hist_filled.empty or df_new_filled.empty: print("Skipping Isolation Forest: Data empty after filling for IF."); return empty_if_df
-    scaler = StandardScaler()
-    try:
-        if df_hist_filled.var().sum() == 0: print("Warning: Historic sample numerical data has zero variance for IF. Skipping."); return empty_if_df
-        df_hist_scaled = scaler.fit_transform(df_hist_filled)
-        df_new_scaled = scaler.transform(df_new_filled)
-    except ValueError as e: print(f"Error during scaling for Isolation Forest: {e}. Skipping IF."); return empty_if_df
-
-    try:
-        model = IsolationForest(contamination=contamination, random_state=random_state, n_estimators=100)
-        model.fit(df_hist_scaled)
-        anomaly_scores = model.decision_function(df_new_scaled)
-        anomaly_df = pd.DataFrame({
-            'index_in_new': df_new_num.index, 'anomaly_score': anomaly_scores,
-            'is_anomaly': model.predict(df_new_scaled) == -1,
-            'severity_score': np.clip(0.5 - anomaly_scores * 2.0, 0, 1) # Rescale: higher is more anomalous
-        })
-        print(f"Isolation Forest flagged {anomaly_df['is_anomaly'].sum()} potential anomalies.")
-        return anomaly_df
-    except Exception as e: print(f"Error during Isolation Forest execution: {e}"); return empty_if_df
-
-def detect_statistical_anomalies_vs_stats(df_new, historic_stats_all_cols, numerical_cols_for_stat_anom, z_threshold=Z_SCORE_THRESHOLD, iqr_multiplier=IQR_MULTIPLIER):
-    anomalies_by_row = defaultdict(list)
-    for col in numerical_cols_for_stat_anom:
-        historic_col_stats = historic_stats_all_cols.get(col)
-        if not historic_col_stats or 'error' in historic_col_stats or \
-           any(pd.isnull(historic_col_stats.get(k)) for k in ['mean', 'std', 'q1', 'q3']):
-            continue
-        hist_mean, hist_std = historic_col_stats['mean'], historic_col_stats['std']
-        hist_q1, hist_q3 = historic_col_stats['q1'], historic_col_stats['q3']
-        hist_iqr_val = historic_col_stats.get('iqr', 0 if pd.isnull(hist_q1) or pd.isnull(hist_q3) else hist_q3 - hist_q1)
-        if pd.isnull(hist_iqr_val) or hist_iqr_val == 0 : hist_iqr_val = 1e-6 # Avoid division by zero later, ensure small range if IQR is 0
-
-        iqr_lower = hist_q1 - iqr_multiplier * hist_iqr_val
-        iqr_upper = hist_q3 + iqr_multiplier * hist_iqr_val
-        
-        # Ensure std is not zero for z-score bounds
-        safe_hist_std = hist_std if hist_std > 1e-6 else 1e-6
-        z_lower = hist_mean - z_threshold * safe_hist_std
-        z_upper = hist_mean + z_threshold * safe_hist_std
-
-        historic_null_ratio = (float(historic_col_stats.get('null_count',0)) / float(historic_col_stats.get('total_count',1))) if historic_col_stats.get('total_count',0) > 0 else 0.0
-
-        for idx, value in df_new[col].items():
-            if pd.isnull(value):
-                if historic_null_ratio < 0.01: # Nulls were rare historically
-                    anomalies_by_row[idx].append({
-                        'column': col, 'value': None, 'method': 'Unexpected Missing Value', 'severity_score': 0.8,
-                        'historic_context': f"Historically <1% missing (actual rate: {historic_null_ratio:.2%})", 'simple_method': 'Unexpected Missing'})
-            elif pd.api.types.is_numeric_dtype(value):
-                value_float = float(value)
-                is_iqr_outlier = False
-                if (value_float < iqr_lower or value_float > iqr_upper):
-                    dist = min(abs(value_float - iqr_lower), abs(value_float - iqr_upper))
-                    sev = 1.0 - np.exp(-0.1 * abs(dist / hist_iqr_val)) # hist_iqr_val is now protected from zero
-                    anomalies_by_row[idx].append({'column': col, 'value': value_float, 'method': 'IQR Outlier', 'severity_score': max(0.5, min(0.99, sev)),
-                                                 'historic_context': f"Typical Range (IQR based): ({format_value_for_display(iqr_lower)}, {format_value_for_display(iqr_upper)})", 'simple_method': 'Outside Typical Range'})
-                    is_iqr_outlier = True
-                if safe_hist_std > 1e-7: # Redundant check, but safe
-                    z = (value_float - hist_mean) / safe_hist_std
-                    if abs(z) > z_threshold:
-                        sev = 1.0 - np.exp(-0.1 * (abs(z) - z_threshold))
-                        if not is_iqr_outlier or abs(z) > z_threshold * 1.5:
-                             anomalies_by_row[idx].append({'column': col, 'value': value_float, 'method': 'Z-score Outlier', 'z_score': f"{z:.2f}", 'severity_score': max(0.5, min(0.99,sev)),
-                                                          'historic_context': f"Far from Historic Avg ({format_value_for_display(hist_mean)}, StdDev: {format_value_for_display(safe_hist_std)})", 'simple_method': 'Far From Average'})
-    return dict(anomalies_by_row)
-
-# --- LLM Integration ---
-def format_data_for_llm(df, indices, max_rows=5):
-    if not indices or df.empty: return "No relevant data rows to display."
-    valid_indices = [idx for idx in list(indices)[:max_rows] if idx in df.index]
-    if not valid_indices: return "Specified indices not found in the dataframe."
-    df_subset = df.loc[valid_indices].copy()
-    for col in df_subset.select_dtypes(include=[np.number]).columns:
-        df_subset[col] = df_subset[col].apply(format_value_for_display)
-    try: return df_subset.to_markdown(index=True)
-    except ImportError: return df_subset.to_string()
-
-def _get_basic_llm_fallback_analysis(
-    id_cols_analyzed_results, null_value_summary,
-    drift_results, stat_anomalies_by_row, if_anomalies_df,
-    # Removed unused df_new, historic_stats_all_cols, new_numerical_summaries, alpha from fallback
-    # as they are not directly used to generate basic strings here.
-    analyzed_num_cols, analyzed_cat_cols
-):
-    basic_issues = []
-    drift_issues_sorted = sorted([r for r in drift_results if r and r.get('drift_detected')], key=lambda x: x.get('drift_score', 0), reverse=True)
-    for item in drift_issues_sorted[:2]:
-        basic_issues.append({'issue': f"Significant change in '{item['column']}'", 'reasoning': f"High change severity ({item.get('drift_score',0):.2f}). {item.get('simple_result', '')}", 'recommendation': f"Investigate source of '{item['column']}' changes."})
-
-    if any(stat_anomalies_by_row.values()) or (if_anomalies_df is not None and not if_anomalies_df.empty and if_anomalies_df['is_anomaly'].any()):
-         basic_issues.append({'issue': "Potential unusual data points found.", 'reasoning': "Statistical or model-based flags.", 'recommendation': "Review detailed anomaly report for specific rows/columns."})
-
-    for col, null_info in list(null_value_summary.items())[:2]:
-        if "Notable Increase" in null_info.get('change_in_null_percentage_points',''):
-             basic_issues.append({'issue': f"Notable increase in missing values for '{col}'", 'reasoning': f"New: {null_info['new_null_percentage']}, Change: {null_info['change_in_null_percentage_points']}", 'recommendation': f"Investigate cause of missing data for '{col}'."})
-    for col, id_info in list(id_cols_analyzed_results.items())[:1]:
-        if id_info.get('missing_values',0) > 0 or not id_info.get('all_unique_among_non_null', True):
-            basic_issues.append({'issue': f"Potential issue with ID column '{col}'", 'reasoning': f"Missing: {id_info['missing_values']}, Duplicates: {id_info.get('duplicate_values_among_non_null',0)}", 'recommendation': f"Verify integrity of ID column '{col}'."})
-
-    per_column_fallback = []
-    for col in (analyzed_num_cols + analyzed_cat_cols):
-        per_column_fallback.append({
-            "column_name": col,
-            "comparative_analysis": "LLM analysis skipped. Refer to raw drift/summary tables.",
-            "anomaly_assessment": {
-                "has_anomalies": False, # Default, cannot determine without LLM
-                "issue_description": None,
-                "suggested_fix": None,
-                "status_message": "LLM analysis skipped for detailed anomaly assessment."
-            }
-        })
-
-    return {"summary": "LLM analysis failed or was skipped. Basic prioritization and raw data sections provided.",
-            "prioritized_issues": basic_issues[:5],
-            "per_column_analysis": per_column_fallback,
-            "id_column_analysis_summary": "LLM analysis skipped. Refer to raw ID checks table.",
-            "null_value_analysis_summary": "LLM analysis skipped. Refer to raw null value comparison table."
-            }
-
-def get_llm_analysis(
-    df_new, id_cols_analyzed_results, null_value_summary,
-    drift_results, stat_anomalies_by_row, if_anomalies_df,
-    historic_stats_all_cols, new_numerical_summaries,
-    analyzed_num_cols, analyzed_cat_cols, alpha=ALPHA
-):
-    if not USE_GEMINI or not gemini_model:
-        return _get_basic_llm_fallback_analysis(
-            id_cols_analyzed_results, null_value_summary, drift_results,
-            stat_anomalies_by_row, if_anomalies_df, analyzed_num_cols, analyzed_cat_cols
-        )
-
-    # --- Prepare LLM Prompt ---
-    id_integrity_prompt = "--- ID Column Integrity Checks (New Data) ---\n"
-    id_integrity_prompt += "Column | Missing | Missing % | Duplicates (Non-Null) | Consistent Length (if applicable)\n"
-    id_integrity_prompt += "-------|---------|-----------|-------------------------|-------------------------------\n"
-    if id_cols_analyzed_results:
-        for col, res in id_cols_analyzed_results.items():
-            id_integrity_prompt += f"{res['column_name']} | {res['missing_values']} | {res['missing_percentage']} | {res.get('duplicate_values_among_non_null', 'N/A')} | {res.get('consistent_length', 'N/A')}\n"
-    else: id_integrity_prompt += "No ID columns identified or checked.\n"
-
-    null_summary_prompt = "--- Null Value Analysis (New Data vs. Historic DB Stats) ---\n"
-    null_summary_prompt += "Column | New Null % | Hist Null % | Change in Null %\n"
-    null_summary_prompt += "-------|--------------|---------------|------------------\n"
-    if null_value_summary:
-        for col, comp in null_value_summary.items():
-            null_summary_prompt += f"{col} | {comp['new_null_percentage']} | {comp['historic_null_percentage']} | {comp['change_in_null_percentage_points']}\n"
-    else: null_summary_prompt += "No null value comparison performed.\n"
-
-    num_summary_prompt = "--- Numerical Data Summary (Historic Stats from DB vs New Data) ---\n"
-    num_summary_prompt += "Column | Hist Avg | Hist Spread (StdDev) | Hist Range (Min-Max) | New Avg | New Spread (StdDev) | New Range (Min-Max)\n"
-    num_summary_prompt += "-------|----------|----------------------|----------------------|---------|---------------------|--------------------\n"
-    if new_numerical_summaries:
-        for col in analyzed_num_cols:
-            new_s = new_numerical_summaries.get(col, {})
-            hist_s = historic_stats_all_cols.get(col, {})
-            h_avg = format_value_for_display(hist_s.get('mean'))
-            h_std = format_value_for_display(hist_s.get('std'))
-            h_range = f"{format_value_for_display(hist_s.get('min'))}-{format_value_for_display(hist_s.get('max'))}" if pd.notna(hist_s.get('min')) and pd.notna(hist_s.get('max')) else 'N/A'
-            n_avg = format_value_for_display(new_s.get('new_mean'))
-            n_std = format_value_for_display(new_s.get('new_std'))
-            n_range = f"{format_value_for_display(new_s.get('new_min'))}-{format_value_for_display(new_s.get('new_max'))}" if pd.notna(new_s.get('new_min')) and pd.notna(new_s.get('new_max')) else 'N/A'
-            num_summary_prompt += f"{col} | {h_avg} | {h_std} | {h_range} | {n_avg} | {n_std} | {n_range}\n"
-    else: num_summary_prompt += "No numerical summaries available for new data.\n"
-
-    significant_drift_for_prompt = sorted([r for r in drift_results if r and r.get('drift_detected')], key=lambda x: x.get('drift_score', 0), reverse=True)
-    all_drift_for_prompt = sorted([r for r in drift_results if r], key=lambda x: x.get('column')) # For comprehensive check
-
-    drift_context_prompt = f"--- Data Distribution Changes Summary (Top {MAX_DRIFT_COLS_TO_LLM_SUMMARY} significant changes shown, then others) ---\n"
-    drift_context_prompt += "Column | Type | Change Result | Change Severity (0-1 if drifted)\n"
-    drift_context_prompt += "-------|------|---------------|--------------------------------\n"
-    if not all_drift_for_prompt: drift_context_prompt += "No drift analysis results available for any columns.\n"
-    else:
-        temp_drift_list = []
-        # Add significant drifts first
-        for item in significant_drift_for_prompt[:MAX_DRIFT_COLS_TO_LLM_SUMMARY]:
-            temp_drift_list.append(f"{item['column']} | {item.get('type','N/A')} | {item.get('simple_result','N/A')} | {item.get('drift_score',0):.3f}\n")
-        
-        # Add other non-drifting or less significant drifting columns
-        other_drift_count = 0
-        for item in all_drift_for_prompt:
-            if not item.get('drift_detected') or item not in significant_drift_for_prompt[:MAX_DRIFT_COLS_TO_LLM_SUMMARY]:
-                 if other_drift_count < (MAX_DRIFT_COLS_TO_LLM_SUMMARY - len(significant_drift_for_prompt[:MAX_DRIFT_COLS_TO_LLM_SUMMARY])) or MAX_DRIFT_COLS_TO_LLM_SUMMARY == 0 : # show some non-drifts too
-                    temp_drift_list.append(f"{item['column']} | {item.get('type','N/A')} | {item.get('simple_result','N/A')} | N/A (no drift or below top)\n")
-                    other_drift_count +=1
-        drift_context_prompt += "".join(temp_drift_list)
-        total_drift_items = len(all_drift_for_prompt)
-        shown_drift_items = len(temp_drift_list)
-        if total_drift_items > shown_drift_items :
-             drift_context_prompt += f"... (and {total_drift_items - shown_drift_items} more columns not detailed here)\n"
-
-
-    all_anomalies_for_llm = []
-    for idx, anoms in stat_anomalies_by_row.items():
-        for anom in anoms: all_anomalies_for_llm.append({'index': idx, 'column': anom['column'], 'value': format_value_for_display(anom.get('value')), 'method': anom.get('simple_method','Stat'), 'score': anom.get('severity_score',0)})
-    if if_anomalies_df is not None and not if_anomalies_df.empty:
-        for _, row in if_anomalies_df[if_anomalies_df['is_anomaly']].iterrows():
-            all_anomalies_for_llm.append({'index': row['index_in_new'], 'column': 'Multiple (IF)', 'value': 'N/A', 'method': 'Combined Features', 'score': row.get('severity_score',0)})
-    all_anomalies_for_llm.sort(key=lambda x: x['score'], reverse=True)
-    anomaly_context_prompt = "--- Unusual Data Points (Anomalies) - Context Snippet ---\n"
-    if not all_anomalies_for_llm: anomaly_context_prompt += "No significant unusual data points detected by statistical or model-based checks.\n"
-    else:
-        anomaly_context_prompt += f"Top {MAX_ANOMALIES_TO_LLM_SNIPPET} raw anomaly flags (by severity):\n"
-        anomaly_context_prompt += "Row Index | Column(s) | Reason Flagged | Value | Severity (0-1)\n"
-        anomaly_context_prompt += "----------|-----------|----------------|-------|----------------\n"
-        for anom in all_anomalies_for_llm[:MAX_ANOMALIES_TO_LLM_SNIPPET]:
-            val_str = str(anom['value']); val_str = (val_str[:25] + '...') if len(val_str) > 25 else val_str
-            anomaly_context_prompt += f"{anom['index']} | {anom['column']} | {anom['method']} | {val_str} | {anom['score']:.3f}\n"
-
-    anomalous_indices_for_snippet = sorted(list(set(a['index'] for a in all_anomalies_for_llm[:MAX_ANOMALIES_TO_LLM_SNIPPET])))
-    anomalous_rows_data_prompt = "Data for Top Anomalous Rows (up to {} rows):\n".format(MAX_ANOMALIES_TO_LLM_SNIPPET)
-    anomalous_rows_data_prompt += format_data_for_llm(df_new, anomalous_indices_for_snippet, max_rows=MAX_ANOMALIES_TO_LLM_SNIPPET)
-    
-    columns_for_llm_per_col_analysis = sorted(list(set(analyzed_num_cols + analyzed_cat_cols))) # Ensure unique and sorted
-
-    prompt = f"""
-You are an expert AI data analyst. Your goal is to provide clear, actionable insights about a 'new' dataset compared to 'historic' database statistics which is coming from a postgres database. 
-Use simple, business-friendly language. Integers should be shown without decimals.
-
---- Analysis Context & Provided Information ---
-New dataset shape: {df_new.shape}
-Columns analyzed (excluding IDs): Numerical: {analyzed_num_cols}, Categorical (incl. text-like): {analyzed_cat_cols}
-Significance level for statistical tests (alpha): {alpha}
-
-{id_integrity_prompt}
-{null_summary_prompt}
-{num_summary_prompt}
-{drift_context_prompt}
-{anomaly_context_prompt}
-{anomalous_rows_data_prompt}
-
---- Your Task ---
-Based ONLY on the information provided above, provide the following in the specified JSON format.
-
-1.  **Overall Summary (key: "summary"):**
-    *   A very brief (2-3 sentences) headline summary of the MOST CRITICAL data quality issues or changes found.
-
-2.  **ID Column Analysis (key: "id_column_analysis_summary"):**
-    *   Briefly summarize key findings from the 'ID Column Integrity Checks'. Highlight any IDs with significant missing values, duplicates, or format inconsistencies. If all good, state that.
-
-3.  **Null Value Analysis (key: "null_value_analysis_summary"):**
-    *   Briefly summarize findings from the 'Null Value Analysis'. Highlight columns with notable increases or decreases in missing data compared to historic levels.
-
-4.  **Per-Column Detailed Analysis (key: "per_column_analysis"):**
-    *   This should be a list of objects, one for each column in: {columns_for_llm_per_col_analysis}.
-    *   For each column, provide an object with keys: "column_name", "comparative_analysis", "anomaly_assessment".
-    *   **"column_name"**: The name of the column.
-    *   **"comparative_analysis"**:
-        *   For ID columns, state if they are unique or not. If not unique, mention the number of duplicates and if they are missing. Also check the format matches the historical data format. If everything is good, state that.
-        *   For **numerical columns**, refer to the 'Numerical Data Summary' to explain how the new data's average, spread (StdDev), and min/max range compare to historic data.
-        *   For **categorical columns**, refer to the 'Data Distribution Changes Summary' for this column. Check the demographics data on web and see if city matches the state. If not, showcase the rows in a table with anomalies mentioning suggested changes. Explain what its 'Change Result' means in simple terms. For example, if 'State' shows 'Category proportions changed significantly from historic,' you might elaborate by saying 'The popularity of different states has shifted compared to historic patterns.' If new categories appeared or historic ones vanished (indicated in 'Change Result'), mention that.
-        *   If a column's 'Change Result' in the 'Data Distribution Changes Summary' indicates consistency (e.g., 'Mean is consistent with historic', 'Category proportions consistent with historic'), state that its distribution appears consistent.
-        *   If the 'Change Result' indicates that historic data was unavailable or comparison was not possible (e.g., 'Historic stats unavailable/incomplete', 'Comparison N/A or insufficient data'), then state that a comparison to historic data could not be made for this column.
-    *   **"anomaly_assessment"**: An object with keys: "has_anomalies" (boolean), "issue_description" (string), "suggested_fix" (string), "status_message" (string).
-        *   **"has_anomalies"**: True if specific anomalies were flagged for THIS column (from 'Anomalous Data Points - Context Snippet') OR if 'Null Value Analysis' showed a 'Notable Increase' for THIS column.
-        *   **"issue_description"**: If "has_anomalies" is true, explain *why* data points are unusual for *this specific column* (e.g., 'Values are far outside the historic range of X to Y', 'Unexpectedly high number of missing values compared to history', 'Category Z appeared which was not seen before'). Reference the 'Anomalous Data Points - Context Snippet' and 'Anomalous Row Data Snippet' if helpful. If column names suggest a relationship (e.g., 'City', 'State', 'ZipCode') and anomalies in those columns for the same row seem contradictory (e.g., 'City: Paris, State: Texas' in the 'Anomalous Row Data Snippet'), EXPLICITLY mention this as a potential 'logical data integrity issue'.
-        *   **"suggested_fix"**: If "has_anomalies" is true, propose a brief, actionable step (e.g., 'Verify data entry for rows [indices if known, else "flagged rows"] in column [Column Name]', 'Investigate source system for recent changes to [Column Name]', 'If values are correct, update historic benchmarks', 'Review data capture process for increased nulls in [Column Name]').
-        *   **"status_message"**: If "has_anomalies" is false, provide a positive confirmation like: "No specific row-level anomalies detected for this column. Data quality appears good regarding outliers or unexpected missingness beyond general null trends reported in the Null Value Analysis section." If there was distribution drift but no specific row anomalies, you can note that the distribution changed but individual data points within the new distribution are not flagged as outliers.
-
-5.  **Prioritized List of Issues (key: "prioritized_issues"):**
-    *   A list of 3-5 MOST CRITICAL issues overall (can be ID issues, null value surges, significant distribution changes, or widespread/severe anomalies).
-    *   Each item in the list should be an object with keys: "issue" (brief description), "reasoning" (why it's important), "recommendation" (actionable next step).
-
-Output Format: Ensure the entire response is a single, valid JSON object.
-"""
-    print("\n--- Calling Gemini API for detailed analysis ---")
-    try:
-        response = gemini_model.generate_content(prompt)
-        cleaned_response = response.text.strip()
-        match = re.search(r"```json\s*([\s\S]*?)\s*```", cleaned_response)
-        json_str = match.group(1) if match else cleaned_response
-        if not (json_str.startswith('{') and json_str.endswith('}')) and not (json_str.startswith('[') and json_str.endswith(']')):
-            json_str = json_str[json_str.find("{") : json_str.rfind("}") + 1]
-
-        llm_result = json.loads(json_str)
-        required_keys = ["summary", "id_column_analysis_summary", "null_value_analysis_summary", "per_column_analysis", "prioritized_issues"]
-        if not all(k in llm_result for k in required_keys):
-             raise ValueError(f"LLM response missing one or more required top-level keys. Found: {list(llm_result.keys())}")
-        if not isinstance(llm_result.get("per_column_analysis"), list):
-            raise ValueError("'per_column_analysis' should be a list.")
-        if llm_result.get("per_column_analysis"):
-            first_col_analysis = llm_result["per_column_analysis"][0]
-            if not all(k in first_col_analysis for k in ["column_name", "comparative_analysis", "anomaly_assessment"]):
-                raise ValueError("LLM 'per_column_analysis' items missing required keys (column_name, comparative_analysis, anomaly_assessment).")
-            if "anomaly_assessment" in first_col_analysis and isinstance(first_col_analysis["anomaly_assessment"], dict):
-                if not all(k in first_col_analysis["anomaly_assessment"] for k in ["has_anomalies", "status_message"]): # issue_desc and fix can be null
-                     raise ValueError("LLM 'anomaly_assessment' items missing required keys (has_anomalies, status_message).")
-            else:
-                raise ValueError("LLM 'anomaly_assessment' is missing or not a dictionary in 'per_column_analysis'.")
-
-
-        print("--- Gemini Analysis Parsed Successfully ---")
-        return llm_result
-    except json.JSONDecodeError as e:
-        print(f"Error: Could not decode LLM response as JSON: {e}. Response was: \n{cleaned_response[:1000]}...")
-    except Exception as e: # Includes genai API errors, ValueError from checks
-        print(f"Error calling, processing, or validating Gemini API response: {e}")
-
-    # Fallback if any error occurs during LLM interaction or parsing
-    print("--- Using basic fallback analysis due to LLM error. ---")
-    return _get_basic_llm_fallback_analysis(
-        id_cols_analyzed_results, null_value_summary, drift_results,
-        stat_anomalies_by_row, if_anomalies_df, analyzed_num_cols, analyzed_cat_cols
-    )
-
-# --- Reporting Function ---
-def generate_report_html(
-    llm_analysis_results, df_new,
-    id_cols_analysis_raw, null_value_summary_raw, new_numerical_summaries_raw,
-    drift_results_raw, stat_anomalies_by_row_raw, if_anomalies_df_raw,
-    historic_stats_all_cols, analyzed_num_cols # Pass analyzed_num_cols for numerical summary
-):
-    report = "<h2>AI Analysis & Insights (Powered by Gemini)</h2>"
-    report += f"<p><strong>Overall Summary:</strong> {llm_analysis_results.get('summary', 'LLM summary not available.')}</p>"
-
-    report += "<h3>Prioritized Issues (AI Recommended)</h3>"
-    prioritized = llm_analysis_results.get('prioritized_issues', [])
-    if prioritized and isinstance(prioritized, list) and any(p.get('issue') for p in prioritized): # Check if list and has content
-        report += "<table class='result-table'><thead><tr><th>Issue</th><th>Why it Matters</th><th>Recommendation</th></tr></thead><tbody>"
-        for issue in prioritized:
-            report += f"<tr><td>{issue.get('issue', 'N/A')}</td><td>{issue.get('reasoning', 'N/A')}</td><td>{issue.get('recommendation', 'N/A')}</td></tr>"
-        report += "</tbody></table>"
-    else: report += "<p>No prioritized issues provided by AI, or analysis used fallback. Check raw data sections.</p>"
-    report += "<hr>"
-
-    report += "<h2>ID Column Integrity Analysis</h2>"
-    id_summary_llm = llm_analysis_results.get('id_column_analysis_summary', '')
-    if id_summary_llm and "LLM analysis skipped" not in id_summary_llm : report += f"<p><strong>AI Summary:</strong> {id_summary_llm}</p>"
-    else: report += f"<p><i>AI summary for ID columns not available or used fallback. Displaying raw checks:</i></p>"
-    if id_cols_analysis_raw:
-        report += "<table class='result-table'><thead><tr><th>ID Column</th><th>Missing</th><th>Missing %</th><th>Unique (Excl. NA)</th><th>Duplicates (Non-Null)</th><th>Common Length</th><th>Consistent Length</th></tr></thead><tbody>"
-        for col, res in id_cols_analysis_raw.items():
-            report += (f"<tr><td>{res['column_name']}</td><td>{res['missing_values']}</td><td>{res['missing_percentage']}</td>"
-                       f"<td>{res.get('unique_values_excl_na', 'N/A')}</td><td>{res.get('duplicate_values_among_non_null', 'N/A')}</td>"
-                       f"<td>{res.get('most_common_length', 'N/A')}</td><td>{res.get('consistent_length', 'N/A')}</td></tr>")
-        report += "</tbody></table>"
-    else: report += "<p>No ID columns identified or analyzed.</p>"
-    report += "<hr>"
-
-    report += "<h2>Null Value Analysis (New Data vs. Historic)</h2>"
-    null_summary_llm = llm_analysis_results.get('null_value_analysis_summary', '')
-    if null_summary_llm and "LLM analysis skipped" not in null_summary_llm: report += f"<p><strong>AI Summary:</strong> {null_summary_llm}</p>"
-    else: report += f"<p><i>AI summary for null values not available or used fallback. Displaying raw checks:</i></p>"
-    if null_value_summary_raw:
-        report += "<table class='result-table'><thead><tr><th>Column</th><th>New Null Count</th><th>New Null %</th><th>Historic Null %</th><th>Change in Null % Points</th></tr></thead><tbody>"
-        for col, comp in null_value_summary_raw.items():
-            hl_class = ''
-            if 'Notable Increase' in comp['change_in_null_percentage_points']: hl_class = 'highlight-increase'
-            elif 'Notable Decrease' in comp['change_in_null_percentage_points']: hl_class = 'highlight-decrease' # Optional styling for decrease
-            report += (f"<tr><td>{col}</td><td>{format_value_for_display(comp['new_null_count'])}</td><td>{comp['new_null_percentage']}</td>"
-                       f"<td>{comp['historic_null_percentage']}</td><td class='{hl_class}'>{comp['change_in_null_percentage_points']}</td></tr>")
-        report += "</tbody></table>"
-    else: report += "<p>No null value comparison performed.</p>"
-    report += "<hr>"
-
-    report += "<h2>Per-Column Detailed Analysis & Anomaly Assessment (AI Insights)</h2>"
-    per_column_llm = llm_analysis_results.get('per_column_analysis', [])
-    if per_column_llm and isinstance(per_column_llm, list) and any("LLM analysis skipped" not in p.get("comparative_analysis","") for p in per_column_llm):
-        for col_analysis in per_column_llm:
-            col_name = col_analysis.get('column_name', 'N/A')
-            report += f"<details><summary><strong>Column: {col_name}</strong></summary>"
-            report += "<div class='column-analysis-box'>"
-            report += f"<p><strong>Comparative Analysis (New vs. Historic):</strong><br>{col_analysis.get('comparative_analysis', 'Not provided.')}</p>"
-            anomaly_assessment = col_analysis.get('anomaly_assessment', {})
-            report += "<strong>Anomaly Assessment:</strong><br>"
-            if anomaly_assessment.get('has_anomalies'):
-                report += f"<p class='highlight-anomaly'><em>Issue Description:</em> {anomaly_assessment.get('issue_description', 'N/A')}</p>"
-                report += f"<p class='highlight-fix'><em>Suggested Fix/Action:</em> {anomaly_assessment.get('suggested_fix', 'N/A')}</p>"
-            elif anomaly_assessment.get('status_message'): # Check if status_message exists
-                 report += f"<p class='highlight-good'>{anomaly_assessment.get('status_message')}</p>"
-            else: # Fallback if no status_message and no anomalies
-                 report += f"<p class='highlight-good'>No specific anomalies flagged for this column.</p>"
-
-            report += "</div></details>"
-    else: report += "<p>Per-column AI analysis not available or used fallback. See raw drift and anomaly sections below for details.</p>"
-    report += "<hr>"
-
-    report += "<h2>Numerical Data Summary (New Data vs. Historic DB Stats)</h2>"
-    if new_numerical_summaries_raw and analyzed_num_cols: # Check if there are num_cols to display
-        report += "<table class='result-table'><thead><tr><th>Column</th><th>Hist Avg</th><th>New Avg</th><th>Hist Spread (StdDev)</th><th>New Spread (StdDev)</th><th>Hist Range (Min-Max)</th><th>New Range (Min-Max)</th></tr></thead><tbody>"
-        for col in analyzed_num_cols: # Iterate over the actual numerical columns analyzed
-            new_s = new_numerical_summaries_raw.get(col, {})
-            hist_s = historic_stats_all_cols.get(col, {})
-            h_avg, n_avg = format_value_for_display(hist_s.get('mean')), format_value_for_display(new_s.get('new_mean'))
-            h_std, n_std = format_value_for_display(hist_s.get('std')), format_value_for_display(new_s.get('new_std'))
-            h_min, h_max = format_value_for_display(hist_s.get('min')), format_value_for_display(hist_s.get('max'))
-            n_min, n_max = format_value_for_display(new_s.get('new_min')), format_value_for_display(new_s.get('new_max'))
-            h_range = f"{h_min} to {h_max}" if h_min != "N/A" and h_max != "N/A" else "N/A"
-            n_range = f"{n_min} to {n_max}" if n_min != "N/A" and n_max != "N/A" else "N/A"
-            report += f"<tr><td>{col}</td><td>{h_avg}</td><td>{n_avg}</td><td>{h_std}</td><td>{n_std}</td><td>{h_range}</td><td>{n_range}</td></tr>"
-        report += "</tbody></table>"
-    elif not analyzed_num_cols: report += "<p>No numerical columns (excluding IDs) were identified for summary.</p>"
-    else: report += "<p>No numerical summaries calculated for new data.</p>"
-    report += "<hr>"
-
-    report += "<h2>Data Distribution Change Details (Statistical Tests)</h2>"
-    sig_drift = [r for r in drift_results_raw if r and r.get('drift_detected')]
-    if sig_drift:
-        report += f"<p>Found {len(sig_drift)} columns where data characteristics likely changed compared to historic patterns (based on statistical tests):</p>"
-        report += "<table class='result-table'><thead><tr><th>Column</th><th>Data Type</th><th>Change Check Method</th><th>Result</th><th>Change Severity (0-1)</th></tr></thead><tbody>"
-        for r in sorted(sig_drift, key=lambda x: x.get('drift_score', 0), reverse=True):
-            report += f"<tr class='highlight-drift'><td>{r['column']}</td><td>{r.get('type','N/A')}</td><td>{r.get('simple_test_name','N/A')}</td><td>{r.get('simple_result','N/A')}</td><td>{r.get('drift_score',0):.3f}</td></tr>"
-        report += "</tbody></table>"
-    elif drift_results_raw: # Drift analysis was run but no significant drift
-        report += "<p>No significant data distribution changes detected by statistical tests.</p>"
-    else: # Drift analysis was not run or produced no results
-        report += "<p>Drift analysis did not produce results or was not run for any columns.</p>"
-
-    report += "<hr>"
-
-    report += "<details><summary><strong>Show Raw Anomaly Flags (Technical Detail)</strong></summary>"
-    report += "<div>"
-    all_anoms_report = []
-    for idx, anoms_list in stat_anomalies_by_row_raw.items():
-        for anom_item in anoms_list: all_anoms_report.append({'index':idx, 'column':anom_item.get('column'), 'value':format_value_for_display(anom_item.get('value')), 'method':anom_item.get('simple_method','Stat'), 'score':anom_item.get('severity_score',0), 'context':anom_item.get('historic_context','N/A'), 'type':'Single Column'})
-    if if_anomalies_df_raw is not None and not if_anomalies_df_raw.empty and 'is_anomaly' in if_anomalies_df_raw.columns:
-        for _, row in if_anomalies_df_raw[if_anomalies_df_raw['is_anomaly']].iterrows():
-            all_anoms_report.append({'index':row['index_in_new'], 'column':'Multiple (IF)', 'value':'N/A', 'method':'Combined Features', 'score':row.get('severity_score',0), 'context':f"IF Score: {row.get('anomaly_score',0):.3f}", 'type':'Multiple Columns'})
-    all_anoms_report.sort(key=lambda x: x.get('score',0), reverse=True) # Add .get for score robustness
-
-    if all_anoms_report:
-        unique_anom_rows = len(set(a['index'] for a in all_anoms_report))
-        report += f"<p>Found {len(all_anoms_report)} potential raw unusual data instances across {unique_anom_rows} unique rows.</p>"
-        report += "<h5>Top Raw Unusual Data Instances (by Severity Score)</h5>"
-        report += "<table class='result-table'><thead><tr><th>Row Index</th><th>Column(s)</th><th>Value</th><th>Reason Flagged</th><th>Severity (0-1)</th><th>Context/Details</th></tr></thead><tbody>"
-        for anom in all_anoms_report[:15]:
-             hl_class = 'highlight-anomaly-high' if anom.get('score',0) > 0.7 else 'highlight-anomaly-med'
-             report += f"<tr class='{hl_class}'><td>{anom['index']}</td><td>{anom['column']}</td><td>{anom['value']}</td><td>{anom['method']} ({anom['type']})</td><td>{anom.get('score',0):.3f}</td><td>{anom['context']}</td></tr>"
-        report += "</tbody></table>"
-        if len(all_anoms_report) > 15: report += f"<p>... and {len(all_anoms_report) - 15} more raw instances.</p>"
-    else: report += "<p>No raw unusual data points flagged by statistical or Isolation Forest methods.</p>"
-    anom_indices_for_display = sorted(list(set(a['index'] for a in all_anoms_report)))[:MAX_ANOMALIES_TO_LLM_SNIPPET]
-    if anom_indices_for_display:
-        report += f"<h6>Data for Top {len(anom_indices_for_display)} Rows with Highest Raw Anomaly Flags</h6>"
-        valid_indices_display = [idx for idx in anom_indices_for_display if idx in df_new.index]
-        if valid_indices_display:
-             report += "<div class='preview-table-container' style='max-height: 300px;'>"
-             try:
-                 df_display_anom = df_new.loc[valid_indices_display].copy()
-                 for col_anom_disp in df_display_anom.select_dtypes(include=[np.number]).columns: # Format numbers
-                     df_display_anom[col_anom_disp] = df_display_anom[col_anom_disp].apply(format_value_for_display)
-                 report += df_display_anom.to_html(classes='preview-table', index=True, border=0, na_rep='NA', escape=False)
-             except Exception as table_err: report += f"<p>Error generating table: {table_err}</p>"
-             report += "</div>"
-    report += "</div></details><hr><p><em>End of Report</em></p>"
-    return report
-
-# --- Main Analysis Function ---
-def run_analysis(new_filepath, historic_sample_filepath=None):
-    db_conn = None
-    try:
-        db_conn = get_db_connection()
-        df_new = load_new_data(new_filepath)
-        df_new_filled_for_drift = handle_missing_values(df_new.copy())
-        df_historic_sample = None
-        if historic_sample_filepath:
+        try: df_sample_for_dtypes = pd.read_csv(filepath, nrows=1000, low_memory=False)
+        except pd.errors.EmptyDataError: raise ValueError("CSV is empty.")
+        except Exception as e: print(f"Warning: Could not read 1000 rows for dtype sniffing, falling back. Error: {e}"); df_sample_for_dtypes = pd.read_csv(filepath, nrows=100, low_memory=False)
+        inferred_dtypes = {}
+        for col in df_sample_for_dtypes.columns:
+            series_sample = df_sample_for_dtypes[col]
             try:
-                df_historic_sample_raw = pd.read_csv(historic_sample_filepath)
-                common_cols_sample = df_new.columns.intersection(df_historic_sample_raw.columns)
-                if not common_cols_sample.empty:
-                    df_historic_sample = df_historic_sample_raw[common_cols_sample].copy()
-                    print(f"Loaded and harmonized historic sample data: {df_historic_sample.shape}")
-                else: print("Warning: No common columns between new data and historic sample.")
-            except Exception as e: print(f"Warning: Could not load/process historic sample CSV: {e}.")
+                numeric_series = pd.to_numeric(series_sample, errors='coerce')
+                if not numeric_series.isna().all():
+                    if numeric_series.dropna().apply(lambda x: isinstance(x, (int, np.integer)) or (isinstance(x, (float, np.floating)) and x.is_integer())).all(): inferred_dtypes[col] = pd.Int64Dtype()
+                    else: inferred_dtypes[col] = float
+                else: inferred_dtypes[col] = object
+            except (ValueError, TypeError): inferred_dtypes[col] = object
+        df = pd.read_csv(filepath, dtype=inferred_dtypes, low_memory=False, keep_default_na=True, na_values=['', '#N/A', '#N/A N/A', '#NA', '-1.#IND', '-1.#QNAN', '-NaN', '-nan', '1.#IND', '1.#QNAN', '<NA>', 'N/A', 'NA', 'NULL', 'NaN', 'n/a', 'nan', 'null'])
+        if df.empty: raise ValueError("CSV is empty after loading with inferred dtypes.")
+        print(f"Loaded new data: {df.shape} from {filepath}")
+        for col in df.columns:
+            if df[col].dtype == object:
+                try:
+                    parsed_dates = pd.to_datetime(df[col], errors='coerce', infer_datetime_format=True)
+                    if parsed_dates.notna().sum() > 0.5 * df[col].notna().sum() and df[col].notna().sum() > 0: df[col] = parsed_dates; print(f"Column '{col}' converted to datetime.")
+                except Exception: pass
+        return df
+    except Exception as e: raise RuntimeError(f"Error loading new data from {filepath}: {e}")
 
-        numerical_cols_for_analysis, categorical_cols_for_analysis, id_cols = \
-            identify_column_types_and_ids(df_new)
-        
-        all_analyzed_cols = numerical_cols_for_analysis + categorical_cols_for_analysis
-        print(f"Columns for full analysis (non-ID): Numerical: {numerical_cols_for_analysis}, Categorical: {categorical_cols_for_analysis}")
+def identify_column_types(df):
+    num_cols, cat_cols, dt_cols, id_cols = [], [], [], []
+    for col in df.columns:
+        if col == 'original_index': continue 
+        col_data = df[col]; nunique_ratio = col_data.nunique(dropna=False) / len(df) if len(df) > 0 else 0
+        is_id_candidate = ((pd.api.types.is_string_dtype(col_data) or pd.api.types.is_numeric_dtype(col_data)) and (any(sub in col.lower() for sub in ['id', 'key', 'uuid', 'identifier', 'number']) and nunique_ratio > 0.9) or (nunique_ratio > 0.98))
+        if is_id_candidate: id_cols.append(col)
+        elif pd.api.types.is_numeric_dtype(col_data) and not pd.api.types.is_bool_dtype(col_data): num_cols.append(col)
+        elif pd.api.types.is_datetime64_any_dtype(col_data) or pd.api.types.is_timedelta64_dtype(col_data): dt_cols.append(col)
+        else: cat_cols.append(col)
+    id_cols = list(set(id_cols)); num_cols = [c for c in num_cols if c not in id_cols]; cat_cols = [c for c in cat_cols if c not in id_cols]; dt_cols = [c for c in dt_cols if c not in id_cols]
+    primary_id = id_cols[0] if id_cols else (df.index.name if df.index.name and df.index.name not in df.columns and df.index.name != 'original_index' else None)
+    if not primary_id and id_cols: primary_id = id_cols[0]
+    print(f"Identified Types -> Primary ID: {primary_id}, Other IDs: {id_cols}, Num: {num_cols}, Cat: {cat_cols}, DT: {dt_cols}")
+    return num_cols, cat_cols, dt_cols, id_cols, primary_id
 
-        id_column_analysis_results = perform_id_column_checks(df_new, id_cols)
-        if id_cols: print(f"Performed integrity checks on ID columns: {id_cols}")
+def compare_schemas(new_df_cols, historic_cols_list_or_dictkeys):
+    set_new = set(c for c in map(str,new_df_cols) if c != 'original_index'); set_hist = set(map(str,historic_cols_list_or_dictkeys))
+    return {'new_cols': sorted(list(set_new - set_hist)), 'missing_cols': sorted(list(set_hist - set_new)), 'common_cols': sorted(list(set_new & set_hist))}
 
-        historic_stats_all_cols = {}
-        if db_conn and HISTORIC_TABLE_NAME:
-            columns_for_db_stats = {col: 'numerical' for col in numerical_cols_for_analysis}
-            columns_for_db_stats.update({col: 'categorical' for col in categorical_cols_for_analysis}) # Includes text-like
-            if columns_for_db_stats:
-                print(f"Fetching historic stats from DB for analytical columns: {list(columns_for_db_stats.keys())}")
-                historic_stats_all_cols = fetch_historic_stats_from_db(db_conn, HISTORIC_TABLE_NAME, columns_for_db_stats)
-                # DEBUG: Print fetched historic stats for a sample categorical column if present
-                # sample_cat_col_for_debug = next((c for c in categorical_cols_for_analysis if c in historic_stats_all_cols), None)
-                # if sample_cat_col_for_debug:
-                #    print(f"DEBUG: Historic stats for '{sample_cat_col_for_debug}': {historic_stats_all_cols[sample_cat_col_for_debug]}")
-            else: print("No non-ID numerical or categorical columns identified to fetch historic stats for.")
-        else: print("Skipping fetch of historic stats from DB (connection, table name issue, or no relevant columns).")
+def calculate_basic_stats(df, num_cols, cat_cols_and_dt):
+    stats = {};
+    if df is None or df.empty: return stats
+    for col_list, is_numeric in [(num_cols, True), (cat_cols_and_dt, False)]:
+        for col in col_list:
+            if col == 'original_index': continue 
+            if col in df.columns:
+                series = df[col]; col_stat = {'null_count': series.isnull().sum(), 'total_in_col': len(series)}
+                series_dropna = series.dropna()
+                if not series_dropna.empty:
+                    if is_numeric: col_stat.update({'mean': series_dropna.mean(), 'std': series_dropna.std(), 'min': series_dropna.min(), 'max': series_dropna.max(), 'median': series_dropna.median()})
+                    else:
+                        col_stat.update({'top_values': dict(series_dropna.value_counts(normalize=False).nlargest(5)), 'unique_count': series_dropna.nunique()})
+                        if pd.api.types.is_datetime64_any_dtype(series_dropna) or pd.api.types.is_timedelta64_dtype(series_dropna):
+                             min_val = series_dropna.min(); max_val = series_dropna.max()
+                             col_stat.update({'min_date': pd.Timestamp(min_val).isoformat() if pd.notna(min_val) else None, 'max_date': pd.Timestamp(max_val).isoformat() if pd.notna(max_val) else None})
+                stats[col] = col_stat
+    return _sanitize_for_json(stats)
 
-        new_numerical_summaries = calculate_new_numerical_summaries(df_new, numerical_cols_for_analysis)
-        null_value_summary = calculate_null_value_comparison(df_new, historic_stats_all_cols, all_analyzed_cols)
+def detect_row_level_anomalies(new_df_with_original_idx, historic_stats, num_cols, primary_id_col): 
+    categorized_anomalies = defaultdict(list)
+    if new_df_with_original_idx is None or new_df_with_original_idx.empty: return {}
+    if 'original_index' not in new_df_with_original_idx.columns: print("Error: 'original_index' column missing in detect_row_level_anomalies."); return {}
+    _perform_basic_semantic_validation(new_df_with_original_idx, categorized_anomalies)
+    for col in new_df_with_original_idx.columns:
+        if col == 'original_index': continue
+        if col not in historic_stats: continue
+        hist_col_stats = historic_stats[col]; hist_mean = _to_native_py_type(hist_col_stats.get('mean')); hist_std = _to_native_py_type(hist_col_stats.get('std')); hist_null_count = _to_native_py_type(hist_col_stats.get('null_count', 0)); hist_total_rows_for_col_metric = _to_native_py_type(hist_col_stats.get('total_in_col', 0)) 
+        hist_null_frac = (hist_null_count / hist_total_rows_for_col_metric) if hist_total_rows_for_col_metric > 0 else 0.0
+        current_col_data_series = new_df_with_original_idx[col]; original_indices_series = new_df_with_original_idx['original_index']
+        if col in num_cols:
+            if hist_mean is not None and hist_std is not None:
+                safe_hist_std = hist_std if hist_std > 1e-9 else 1e-9 
+                if pd.api.types.is_numeric_dtype(current_col_data_series):
+                    non_null_mask = current_col_data_series.notna()
+                    if non_null_mask.sum() > 0:
+                        values_to_check = current_col_data_series[non_null_mask]; z_scores_series = (values_to_check - hist_mean) / safe_hist_std; outlier_mask_on_z_scores = abs(z_scores_series) > Z_SCORE_THRESHOLD
+                        if outlier_mask_on_z_scores.any():
+                            outlier_df_indices = values_to_check[outlier_mask_on_z_scores].index 
+                            for df_idx in outlier_df_indices:
+                                original_idx_val = original_indices_series.loc[df_idx]; val = current_col_data_series.loc[df_idx]; z = z_scores_series.loc[df_idx]; native_orig_idx = _to_native_py_type(original_idx_val)
+                                categorized_anomalies[native_orig_idx].append({'type': ANOMALY_TYPE_DATA_MISMATCH, 'column': col, 'value': _to_native_py_type(val), 'message': f"Outlier: value {format_value_for_display(val)} (Z={z:.1f}). Hist mean {format_value_for_display(format(hist_mean, '.2f'))}, std {format_value_for_display(format(hist_std, '.2f'))}."})
+        current_col_null_count = current_col_data_series.isnull().sum(); current_col_total = len(current_col_data_series)
+        current_col_null_frac = (current_col_null_count / current_col_total) if current_col_total > 0 else 0
+        if (hist_null_frac < 0.05 and current_col_null_frac > (hist_null_frac + 0.10) and current_col_null_count > 0) or \
+           (hist_null_frac == 0 and current_col_null_frac > 0.01 and current_col_null_count > 0) :
+            null_df_indices = current_col_data_series[current_col_data_series.isnull()].index
+            for df_idx in null_df_indices: 
+                original_idx_val = original_indices_series.loc[df_idx]; native_orig_idx = _to_native_py_type(original_idx_val)
+                if not any(a['type'] == ANOMALY_TYPE_MISSING and a['column'] == col for a in categorized_anomalies[native_orig_idx]):
+                    categorized_anomalies[native_orig_idx].append({'type': ANOMALY_TYPE_MISSING, 'column': col, 'value': None, 'message': f"Unexpected NULL. Column's current null rate: {current_col_null_frac:.1%}, historic: {hist_null_frac:.1%}."})
+    return _sanitize_for_json(dict(categorized_anomalies))
 
-        drift_results = []
-        for col in numerical_cols_for_analysis:
-            hist_col_s = historic_stats_all_cols.get(col, {})
-            result_drift = detect_numerical_drift_vs_stats(df_new_filled_for_drift[col], hist_col_s, col)
-            if result_drift: drift_results.append(result_drift)
-        for col in categorical_cols_for_analysis: # Includes text-like
-            hist_col_s = historic_stats_all_cols.get(col, {})
-            result_drift = detect_categorical_drift_vs_stats(df_new_filled_for_drift[col], hist_col_s, col)
-            if result_drift: drift_results.append(result_drift)
-        
-        # DEBUG: Print drift results for a sample categorical column
-        sample_cat_col_for_drift_debug = next((c for c in categorical_cols_for_analysis), None)
-        if sample_cat_col_for_drift_debug:
-           drift_res_debug = [r for r in drift_results if r['column'] == sample_cat_col_for_drift_debug]
-           if drift_res_debug:
-               print(f"DEBUG: Drift result for '{sample_cat_col_for_drift_debug}': {drift_res_debug[0]}")
+def _validate_email_value(value, col, original_idx_map_key, categorized_anomalies):
+    email_pattern = re.compile(r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$')
+    if pd.notna(value) and isinstance(value, str) and not email_pattern.match(value): categorized_anomalies[original_idx_map_key].append({'type': ANOMALY_TYPE_INCORRECT_FORMAT, 'column': col, 'value': _to_native_py_type(value), 'message': f"Invalid email format: '{format_value_for_display(value)}'."})
 
+def _validate_date_value_str(value_str, col, col_lower, original_idx_map_key, categorized_anomalies):
+    if pd.notna(value_str) and isinstance(value_str, str) and re.search(r'\d', value_str): 
+        try: 
+            parsed_dt = pd.to_datetime(value_str)
+            if 'birth' in col_lower or 'dob' in col_lower:
+                if parsed_dt.tz_localize(None) > datetime.now(timezone.utc).tz_localize(None).replace(tzinfo=None): categorized_anomalies[original_idx_map_key].append({'type': ANOMALY_TYPE_INCORRECT_FORMAT, 'column': col, 'value': _to_native_py_type(value_str), 'message': f"Future date for birth date: {format_value_for_display(value_str)} (parsed as {parsed_dt.date()})."})
+        except (ValueError, TypeError): categorized_anomalies[original_idx_map_key].append({'type': ANOMALY_TYPE_INCORRECT_FORMAT, 'column': col, 'value': _to_native_py_type(value_str), 'message': f"Unparseable date format: '{format_value_for_display(value_str)}'."})
 
-        if_anomalies_df = detect_anomalies_isolation_forest(
-            df_historic_sample, df_new_filled_for_drift, numerical_cols_for_analysis
-        )
-        stat_anomalies_by_row = detect_statistical_anomalies_vs_stats(
-            df_new, historic_stats_all_cols, numerical_cols_for_analysis
-        )
+def _validate_future_birth_date_value(value_dt, col, original_idx_map_key, categorized_anomalies):
+    if pd.notna(value_dt) and isinstance(value_dt, (pd.Timestamp, datetime, date)):
+        current_dt_for_comp = value_dt; now_naive = datetime.now(timezone.utc).tz_localize(None)
+        if hasattr(value_dt, 'tzinfo') and value_dt.tzinfo is not None: current_dt_for_comp = value_dt.tz_localize(None)
+        if isinstance(current_dt_for_comp, date) and not isinstance(current_dt_for_comp, datetime): current_dt_for_comp = datetime.combine(current_dt_for_comp, datetime.min.time())
+        col_lower = col.lower()
+        if ('birth' in col_lower or 'dob' in col_lower) and current_dt_for_comp > now_naive: categorized_anomalies[original_idx_map_key].append({'type': ANOMALY_TYPE_INCORRECT_FORMAT, 'column': col, 'value': _to_native_py_type(value_dt), 'message': f"Future date for birth date: {format_value_for_display(value_dt)}."})
 
-        llm_analysis_results = get_llm_analysis(
-            df_new, id_column_analysis_results, null_value_summary,
-            drift_results, stat_anomalies_by_row, if_anomalies_df,
-            historic_stats_all_cols, new_numerical_summaries,
-            numerical_cols_for_analysis, categorical_cols_for_analysis, alpha=ALPHA
-        )
+def _validate_phone_value(value, col, original_idx_map_key, categorized_anomalies):
+    if pd.notna(value) and isinstance(value, str) and re.search(r'[a-zA-Z]', value): categorized_anomalies[original_idx_map_key].append({'type': ANOMALY_TYPE_INCORRECT_FORMAT, 'column': col, 'value': _to_native_py_type(value), 'message': f"Invalid phone number (contains letters): '{format_value_for_display(value)}'."})
 
-        report_html = generate_report_html(
-            llm_analysis_results, df_new,
-            id_column_analysis_results, null_value_summary, new_numerical_summaries,
-            drift_results, stat_anomalies_by_row, if_anomalies_df,
-            historic_stats_all_cols, numerical_cols_for_analysis # Pass numerical_cols for report
-        )
+def _validate_location_pair(value1, col1, value2, col2, original_idx_map_key, categorized_anomalies):
+    if pd.notna(value1) and pd.notna(value2) and isinstance(value1, str) and isinstance(value2, str):
+        city_col, state_col = (col1, col2) if 'city' in col1.lower() else (col2, col1)
+        city_val, state_val = (value1, value2) if city_col == col1 else (value2, value1)
 
-        new_preview_html = get_preview_table_html(df_new, title="New Data Preview")
-        hist_s_preview_title = "Historic Sample Data Preview" if historic_sample_filepath else "No Historic Sample Provided for Preview"
-        historic_preview_html = get_preview_table_html(df_historic_sample, title=hist_s_preview_title)
+        # Load US city/state data (in a real application, this would be loaded once from a database/file)
+        # This is a small subset for demonstration. In production, use a complete database of valid city/state combinations.
+        valid_city_state_pairs = {
+            ('New York', 'New York'), ('Los Angeles', 'California'), ('Chicago', 'Illinois'),
+            ('Houston', 'Texas'), ('Phoenix', 'Arizona'), ('Philadelphia', 'Pennsylvania'),
+            ('San Antonio', 'Texas'), ('San Diego', 'California'), ('Dallas', 'Texas'),
+            ('San Jose', 'California'), ('Austin', 'Texas'), ('Jacksonville', 'Florida'),
+            ('Fort Worth', 'Texas'), ('Columbus', 'Ohio'), ('Charlotte', 'North Carolina'),
+            ('Indianapolis', 'Indiana'), ('Seattle', 'Washington'), ('Denver', 'Colorado'),
+            ('Boston', 'Massachusetts'), ('Nashville', 'Tennessee'), ('Portland', 'Oregon'),
+            ('Las Vegas', 'Nevada'), ('Detroit', 'Michigan'), ('Memphis', 'Tennessee')
+        }
 
-        return report_html, historic_preview_html, new_preview_html
+        city_state_pair = (city_val.strip(), state_val.strip())
+        if city_state_pair not in valid_city_state_pairs:
+            categorized_anomalies[original_idx_map_key].append({
+                'type': ANOMALY_TYPE_LOCATION_MISMATCH,
+                'column': city_col,
+                'value': _to_native_py_type(city_val),
+                'related_columns': {state_col: _to_native_py_type(state_val)},
+                'message': f"Possible city/state mismatch: '{format_value_for_display(city_val)}' in '{format_value_for_display(state_val)}'"
+            })
 
-    except (ValueError, RuntimeError, FileNotFoundError) as e:
-        print(f"CRITICAL ANALYSIS ERROR: {e}")
-        import traceback; traceback.print_exc()
-        error_html = f"<h2>Analysis Failed Critically</h2><hr><p><strong>Error Type: {type(e).__name__}</strong></p><p><strong>Message:</strong> {e}</p><p>Please check inputs and server logs.</p>"
-        return error_html, "<p>Preview N/A</p>", "<p>Preview N/A</p>"
+def _perform_basic_semantic_validation(df_with_original_idx, categorized_anomalies):
+    if df_with_original_idx is None or df_with_original_idx.empty: return
+    if 'original_index' not in df_with_original_idx.columns: return 
+    
+    # Find city and state columns
+    city_col = None
+    state_col = None
+    for col in df_with_original_idx.columns:
+        col_lower = col.lower()
+        if 'city' in col_lower: city_col = col
+        elif 'state' in col_lower: state_col = col
+
+    # Check for city/state mismatches
+    if city_col and state_col:
+        for idx in df_with_original_idx.index:
+            city_val = df_with_original_idx.loc[idx, city_col]
+            state_val = df_with_original_idx.loc[idx, state_col]
+            original_idx_map_key = _to_native_py_type(df_with_original_idx.loc[idx, 'original_index'])
+            _validate_location_pair(city_val, city_col, state_val, state_col, original_idx_map_key, categorized_anomalies)
+
+    # Perform other validations
+    for col in df_with_original_idx.columns:
+        if col == 'original_index': continue 
+        col_lower = col.lower(); current_col_series = df_with_original_idx[col]; original_indices_series = df_with_original_idx['original_index']
+        for df_idx, value in current_col_series.items(): 
+            original_idx_map_key = _to_native_py_type(original_indices_series.loc[df_idx])
+            if 'email' in col_lower: _validate_email_value(value, col, original_idx_map_key, categorized_anomalies)
+            if pd.api.types.is_datetime64_any_dtype(current_col_series.dtype):
+                if 'birth' in col_lower or 'dob' in col_lower: _validate_future_birth_date_value(value, col, original_idx_map_key, categorized_anomalies)
+            elif isinstance(value, str) and any(term in col_lower for term in ['date', 'time', 'day', 'month', 'year']): _validate_date_value_str(value, col, col_lower, original_idx_map_key, categorized_anomalies)
+            elif any(term in col_lower for term in ['phone', 'mobile', 'cell', 'tel']): _validate_phone_value(value, col, original_idx_map_key, categorized_anomalies)
+
+def get_llm_analysis(log_id, new_df_sample_with_orig_idx, historic_df_sample, new_stats, historic_stats, schema_comparison, anomalous_rows_sample_messages, total_new_rows, total_historic_rows, primary_id_col):
+    raw_llm_response_for_debug = "LLM not called (not configured or error before call)."; default_llm_response = {"overall_assessment": {"quality_summary": "LLM Analysis skipped.", "key_findings_summary": []}, "schema_analysis": {"detected_changes_summary": "N/A", "new_columns_impact": [], "missing_columns_impact": [], "root_cause_hypothesis": "N/A", "suggested_remediation_ddl": "N/A"}, "data_drift_and_anomaly_analysis": {"significant_distribution_shifts": [], "anomaly_patterns_observed": "N/A", "root_cause_hypothesis": "N/A", "suggested_investigation_actions": []}, "semantic_analysis": {"inferred_column_meanings": [], "location_inconsistencies": [], "format_inconsistencies": [], "relational_inconsistencies": [], "suspicious_values": []}, "general_actionable_recommendations": ["Review configuration if LLM analysis is desired."]}
+    if not USE_GEMINI or not gemini_model: return default_llm_response, raw_llm_response_for_debug
+    formatted_new_data_preview = format_data_for_llm(new_df_sample_with_orig_idx); formatted_historic_data_preview = format_data_for_llm(historic_df_sample)
+    prompt = f"""
+You are IngestMate Edge, an expert data pipeline observability and remediation agent.
+Analyze data drift, anomalies, and semantic inconsistencies between a new dataset and historic baseline. Provide detailed analysis, root causes, and actionable remediation. The new data sample includes an 'original_index' column. When reporting row-specific issues from the sample, please reference this 'original_index' value in the 'row_identifier' field of your JSON response. Output your response STRICTLY as a JSON object matching the structure at the end.
+CONTEXT:
+- New Data Rows Total: {total_new_rows}, Historic Rows Total: {total_historic_rows if total_historic_rows is not None else 'N/A'}
+- Primary ID Column (if identified, might differ from original_index): {primary_id_col or 'Not Identified'}
+NEW DATA SAMPLE ({MAX_ROWS_FOR_LLM_DATA_PREVIEW} rows, includes 'original_index'):
+{formatted_new_data_preview}
+HISTORIC DATA SAMPLE ({MAX_ROWS_FOR_LLM_DATA_PREVIEW} rows, if available):
+{formatted_historic_data_preview if historic_df_sample is not None and not historic_df_sample.empty else "No historic data sample."}
+SCHEMA COMPARISON:
+- New Columns: {schema_comparison.get('new_cols', [])}
+- Missing Columns: {schema_comparison.get('missing_cols', [])}
+- Common Columns Count: {len(schema_comparison.get('common_cols', []))}
+AGGREGATE STATISTICS (New vs. Historic):
+New Dataset Stats: {json.dumps(new_stats, indent=1, default=str)}
+Historic Dataset Stats: {json.dumps(historic_stats, indent=1, default=str) if historic_stats else "No historic stats."}
+PRELIMINARY ANOMALOUS ROW MESSAGES (from statistical/basic checks, keyed by original_index):
+{json.dumps(anomalous_rows_sample_messages, indent=1, default=str) if anomalous_rows_sample_messages else "No preliminary anomalies from basic checks, or sample is empty."}
+CRITICAL SEMANTIC ANALYSIS (Your primary focus beyond stats): For each finding, specify the 'original_index' from the sample in the 'row_identifier' field.
+1.  INFERRED MEANINGS: Infer semantic meaning for each column (e.g., 'email', 'city', 'transaction_amount').
+2.  FORMAT INCONSISTENCIES: Check standard formats (emails, phones, dates, URLs, postal codes). For each inconsistent row in the sample, detail: 'row_identifier' (the 'original_index' value), the problematic column(s) with their values, and a clear description.
+3.  **LOCATION INCONSISTENCY ANALYSIS (VERY HIGH PRIORITY - populate `semantic_analysis.location_inconsistencies`):** Identify city, state/province, country, postal_code columns. For EACH ROW in the sample, rigorously validate if these components form a plausible geographic unit. **FLAG ANY MISMATCHES (e.g., "Las Vegas, California", "Chicago, Texas, USA", "Paris, France, Germany"). Check postal codes against city/state.** For each inconsistent row found in the sample, detail: 'row_identifier' (the 'original_index' value), the problematic columns with their values, and a clear description of the inconsistency.
+4.  RELATIONAL INCONSISTENCIES (General): Check other logical relationships (e.g., start_date after end_date). Detail 'row_identifier' and issue.
+5.  SUSPICIOUS VALUES: Identify syntactically valid but semantically unlikely values (e.g., age=200, city_name="Test Data Input"). Detail 'row_identifier' and issue.
+6.  PATTERN SHIFTS: Note breakdowns in column correlations or unexpected categorical distribution changes not captured by simple stats.
+JSON OUTPUT STRUCTURE (Strictly adhere to this. Use 'original_index' value for `row_identifier` where applicable):
+{{
+  "overall_assessment": {{"quality_summary": "Concise (1-2 sentences) opinion on data quality change.","key_findings_summary": ["2-3 most critical findings (schema, drift, semantic)."]}},
+  "schema_analysis": {{"detected_changes_summary": "e.g., 'Added 2 columns, removed 1'.","new_columns_impact": [{{ "name": "col", "potential_purpose": "..", "data_implications": ".." }}],"missing_columns_impact": [{{ "name": "col", "potential_reason": "..", "impact": ".." }}],"root_cause_hypothesis": "Hypothesis for schema changes.","suggested_remediation_ddl": "EXAMPLE PostgreSQL DDL (e.g., 'ALTER TABLE ... ADD COLUMN ...;'). 'N/A' if none."}},
+  "data_drift_and_anomaly_analysis": {{"significant_distribution_shifts": [{{ "column": "col", "observation": "..", "historic_metric_value": "..", "new_metric_value": "..", "potential_cause_hypothesis": "..", "potential_impact": ".." }}],"anomaly_patterns_observed": "Key patterns in statistical/basic anomalies. 'No significant patterns' if none.","root_cause_hypothesis": "Hypothesis for major drifts/anomalies.","suggested_investigation_actions": ["Actionable step 1.", "Step 2"]}},
+  "semantic_analysis": {{ "inferred_column_meanings": [ {{ "column": "col", "inferred_type": "type", "confidence": "high/medium/low" }} ], "location_inconsistencies": [ {{ "row_identifier": "original_index_value_from_sample", "involved_columns": {{ "city": "CityVal", "state": "StateVal" }}, "issue_description": "e.g., City 'X' not in State 'Y'." }} ], "format_inconsistencies": [ {{ "row_identifier": "original_index_value_from_sample", "column": "col", "expected_format": "..", "inconsistent_examples": ["ex1"], "issue_description": "Specific problem observed." }} ], "relational_inconsistencies": [ {{ "row_identifier": "original_index_value_from_sample", "related_columns": ["c1", "c2"], "issue_description": "..", "example_values": {{}} }} ], "suspicious_values": [ {{ "row_identifier": "original_index_value_from_sample", "column": "col", "suspicious_values_sample": ["val1"], "reason": ".." }} ] }},
+  "general_actionable_recommendations": [ "High-level recommendation 1." ]
+}}
+Be concise, thorough, and ensure valid JSON. Location consistency and referencing 'original_index' values in 'row_identifier' are paramount.
+"""
+    try:
+        response = gemini_model.generate_content(prompt); raw_llm_response_for_debug = response.text.strip() if hasattr(response, 'text') and response.text else "{}"
+        # print(f"DEBUG (Log ID: {log_id}): Raw LLM Response Snippet:\n{raw_llm_response_for_debug[:1000]}...")
+        json_str_match = re.search(r"```json\s*([\s\S]*?)\s*```", raw_llm_response_for_debug); json_to_parse = json_str_match.group(1) if json_str_match else raw_llm_response_for_debug
+        llm_result_from_api = json.loads(json_to_parse); merged_llm_response = json.loads(json.dumps(default_llm_response))
+        def _deep_update(target, source): 
+            for key, value in source.items():
+                if key in target:
+                    if isinstance(target[key], dict) and isinstance(value, dict): _deep_update(target[key], value)
+                    elif isinstance(target[key], list) and isinstance(value, list): 
+                        if value: target[key] = value 
+                        elif not target[key]: target[key] = [] 
+                    elif value is not None: target[key] = value
+        _deep_update(merged_llm_response, llm_result_from_api)
+        current_quality_summary = merged_llm_response.get("overall_assessment", {}).get("quality_summary", "LLM Analysis skipped.")
+        if not current_quality_summary or "LLM Analysis skipped." in current_quality_summary:
+            sa = merged_llm_response.get("schema_analysis", {}); da = merged_llm_response.get("data_drift_and_anomaly_analysis", {}); sema = merged_llm_response.get("semantic_analysis", {})
+            if sa.get("detected_changes_summary", "N/A") == "N/A" and da.get("anomaly_patterns_observed", "N/A") == "N/A" and not any(sema.get(k) for k in ["location_inconsistencies", "format_inconsistencies", "relational_inconsistencies", "suspicious_values"]):
+                merged_llm_response["overall_assessment"]["quality_summary"] = (f"LLM response structure might be partially incorrect or incomplete. (Original LLM summary: '{current_quality_summary or 'Not provided'}')")
+        return merged_llm_response, raw_llm_response_for_debug
+    except json.JSONDecodeError as je: print(f"LLM JSONDecodeError (Log ID: {log_id}): {je}. Raw: {raw_llm_response_for_debug[:500]}"); error_response = json.loads(json.dumps(default_llm_response)); error_response["overall_assessment"]["quality_summary"] = f"LLM analysis failed: JSON parsing error. ({je})"; return error_response, raw_llm_response_for_debug
+    except Exception as e: print(f"LLM Analysis Error (Log ID: {log_id}): {e}. Raw: {raw_llm_response_for_debug[:500]}"); error_response = json.loads(json.dumps(default_llm_response)); error_response["overall_assessment"]["quality_summary"] = f"LLM analysis failed: {e}"; return error_response, raw_llm_response_for_debug
+
+def get_original_index_from_llm_row_id(llm_row_id_str, df_sample_original_indices):
+    if llm_row_id_str is None or df_sample_original_indices.empty: return None
+    if isinstance(llm_row_id_str, str):
+        matches = df_sample_original_indices[df_sample_original_indices.astype(str) == llm_row_id_str]
+        if not matches.empty: return _to_native_py_type(matches.iloc[0])
+    try:
+        target_dtype = df_sample_original_indices.dtype; converted_id = None
+        if pd.api.types.is_integer_dtype(target_dtype): converted_id = int(llm_row_id_str)
+        elif pd.api.types.is_float_dtype(target_dtype): converted_id = float(llm_row_id_str)
+        if converted_id is not None:
+            matches = df_sample_original_indices[df_sample_original_indices == converted_id]
+            if not matches.empty: return _to_native_py_type(matches.iloc[0])
+    except (ValueError, TypeError): pass # print(f"Could not convert LLM row_identifier '{llm_row_id_str}' to match original_index dtype {df_sample_original_indices.dtype}")
+    # print(f"DEBUG: Could not find native original_index for LLM row_identifier '{llm_row_id_str}' in sample indices: {list(df_sample_original_indices)}")
+    return None
+
+def _process_llm_semantic_anomalies_into_map(llm_semantic_analysis_dict, categorized_anomalies_map, new_df_llm_sample_original_indices):
+    if not llm_semantic_analysis_dict or not isinstance(llm_semantic_analysis_dict, dict): return
+    semantic_map = {"location_inconsistencies": ANOMALY_TYPE_LOCATION_MISMATCH, "format_inconsistencies": ANOMALY_TYPE_INCORRECT_FORMAT, "relational_inconsistencies": ANOMALY_TYPE_DATA_MISMATCH, "suspicious_values": ANOMALY_TYPE_DATA_MISMATCH}
+    # print(f"DEBUG _process_llm_semantic_anomalies_into_map: Starting. LLM semantic_analysis: {json.dumps(llm_semantic_analysis_dict, indent=2)}")
+    for llm_key, anomaly_type_const in semantic_map.items():
+        llm_anomalies = llm_semantic_analysis_dict.get(llm_key, [])
+        if not isinstance(llm_anomalies, list): 
+            # print(f"DEBUG _process_llm_semantic_anomalies_into_map: LLM key '{llm_key}' is not a list. Found: {type(llm_anomalies)}")
+            continue
+        # print(f"DEBUG _process_llm_semantic_anomalies_into_map: Processing LLM key '{llm_key}', found {len(llm_anomalies)} items.")
+        for llm_anomaly_item in llm_anomalies:
+            if not isinstance(llm_anomaly_item, dict): 
+                # print(f"DEBUG _process_llm_semantic_anomalies_into_map: Item in LLM key '{llm_key}' is not a dict. Item: {llm_anomaly_item}")
+                continue
+            llm_row_id_str = llm_anomaly_item.get("row_identifier")
+            native_original_idx = get_original_index_from_llm_row_id(llm_row_id_str, new_df_llm_sample_original_indices)
+            if native_original_idx is None:
+                # print(f"DEBUG _process_llm_semantic_anomalies_into_map: Could not map LLM row_identifier '{llm_row_id_str}' for anomaly: {llm_anomaly_item}")
+                continue
+            # print(f"DEBUG _process_llm_semantic_anomalies_into_map: Mapped LLM row_id '{llm_row_id_str}' to native_original_idx '{native_original_idx}' for item: {llm_anomaly_item}")
+            message = llm_anomaly_item.get("issue_description") or llm_anomaly_item.get("reason", "AI detected issue.")
+            column_from_llm = llm_anomaly_item.get("column"); involved_cols_dict = llm_anomaly_item.get("involved_columns"); related_cols_list = llm_anomaly_item.get("related_columns")
+            primary_col_for_anomaly = column_from_llm
+            if not primary_col_for_anomaly:
+                if isinstance(involved_cols_dict, dict) and involved_cols_dict: primary_col_for_anomaly = list(involved_cols_dict.keys())[0] 
+                elif isinstance(related_cols_list, list) and related_cols_list: primary_col_for_anomaly = related_cols_list[0]
+            value_display = "See details" 
+            if isinstance(involved_cols_dict, dict): value_display = str({k:v for k,v in list(involved_cols_dict.items())[:2]})
+            elif llm_anomaly_item.get("inconsistent_examples"): value_display = str(llm_anomaly_item.get("inconsistent_examples")[:1])
+            elif llm_anomaly_item.get("suspicious_values_sample"): value_display = str(llm_anomaly_item.get("suspicious_values_sample")[:1])
+            categorized_anomalies_map[native_original_idx].append({'type': anomaly_type_const, 'column': primary_col_for_anomaly or "Row-level", 'value': value_display, 'message': message, 'details': llm_anomaly_item})
+            # print(f"DEBUG _process_llm_semantic_anomalies_into_map: Added AI anomaly for original_index '{native_original_idx}': Type '{anomaly_type_const}', Col '{primary_col_for_anomaly}', Msg '{message}'")
+    # print("DEBUG _process_llm_semantic_anomalies_into_map: Finished.")
+
+def _render_llm_overall_assessment(d): return f"<div class='report-section card llm-overall-assessment-card alert-info'><h3 class='card-title'><span class='emoji'>💡</span> Overall AI Assessment</h3><p><strong>Quality Summary:</strong> {html.escape(d.get('quality_summary', 'N/A'))}</p>{('<strong>Key Findings:</strong><ul>' + ''.join(f'<li>{html.escape(str(f))}</li>' for f in d.get('key_findings_summary', []) if str(f).strip()) + '</ul>') if d.get('key_findings_summary') and isinstance(d.get('key_findings_summary'), list) and any(str(f).strip() for f in d.get('key_findings_summary')) else '<p><em>No specific key findings highlighted by AI.</em></p>'}</div>" if d else ""
+def _render_llm_schema_analysis(d):
+    if not d: return ""
+    h = f"<div class='report-section card llm-schema-analysis-card'><h3 class='card-title'><span class='emoji'>🧬</span> Schema Drift: AI Analysis & Remediation</h3><p><strong>Detected Changes Summary:</strong> {html.escape(d.get('detected_changes_summary', 'N/A'))}</p>"
+    for impact_type, impacts_list_key in [("New Columns", 'new_columns_impact'), ("Missing Columns", 'missing_columns_impact')]:
+        impacts = d.get(impacts_list_key, [])
+        if impacts and isinstance(impacts, list) and any(impacts):
+            h += f"<strong>Impact of {impact_type}:</strong><ul>"; dk1,dv1k=('potential_purpose','data_implications') if impact_type=="New Columns" else ('potential_reason','impact')
+            for i in impacts: h+=f"<li><strong>{html.escape(i.get('name','Unknown'))}:</strong> {html.escape(dk1.replace('_',' ').title())}: {html.escape(i.get(dk1,'N/A'))}. {html.escape(dv1k.replace('_',' ').title())}: {html.escape(i.get(dv1k,'N/A'))}</li>" if isinstance(i,dict) else ""
+            h += "</ul>"
+    h += f"<p><strong>Potential Root Cause:</strong> {html.escape(d.get('root_cause_hypothesis', 'N/A'))}</p>"; ddl=d.get('suggested_remediation_ddl','N/A')
+    h += f"<strong>Suggested DDL (Example for Review):</strong><pre><code class='language-sql'>{html.escape(str(ddl))}</code></pre>" if ddl and str(ddl).strip().lower() not in ['n/a','none',''] else "<p><strong>Suggested DDL:</strong> N/A</p>"
+    h += "</div>"; return h
+def _render_llm_data_drift_anomaly_analysis(d):
+    if not d: return ""
+    h = f"<div class='report-section card llm-data-drift-card'><h3 class='card-title'><span class='emoji'>📉</span> Data Drift & Statistical Anomalies: AI Analysis</h3>"
+    shifts = d.get('significant_distribution_shifts', [])
+    if shifts and isinstance(shifts, list) and any(shifts):
+        h += "<strong>Significant Distribution Shifts:</strong><ul>"
+        for s in shifts: h+=f"<li><strong>Column '{html.escape(s.get('column','N/A'))}':</strong> {html.escape(s.get('observation','N/A'))} (Historic: {html.escape(str(s.get('historic_metric_value','N/A')))}, New: {html.escape(str(s.get('new_metric_value','N/A')))})<br><em>Potential Cause:</em> {html.escape(s.get('potential_cause_hypothesis','N/A'))}<br><em>Potential Impact:</em> {html.escape(s.get('potential_impact','N/A'))}</li>" if isinstance(s,dict) else ""
+        h += "</ul>"
+    h += f"<p><strong>Statistical Anomaly Patterns Observed:</strong> {html.escape(d.get('anomaly_patterns_observed', 'N/A'))}</p><p><strong>Potential Root Cause for Drifts/Anomalies:</strong> {html.escape(d.get('root_cause_hypothesis', 'N/A'))}</p>"
+    actions = d.get('suggested_investigation_actions', [])
+    if actions and isinstance(actions,list) and any(str(a).strip() for a in actions): h+="<strong>Suggested Investigation Actions:</strong><ul>" + "".join(f"<li>{html.escape(str(a))}</li>" for a in actions if str(a).strip()) + "</ul>"
+    else: h+="<p><em>No specific investigation actions suggested by AI for statistical drift.</em></p>"
+    h += "</div>"; return h
+def _render_llm_semantic_analysis(d): 
+    if not d: return ""
+    h = "<div class='report-section card llm-semantic-analysis-card'><h3 class='card-title'><span class='emoji'>🧩</span> Semantic & Contextual AI Analysis (Summary)</h3><p><em>Note: Detailed row-level AI findings (if any) are listed in separate tables below and used for cell highlighting in previews. This section provides the AI's narrative summary.</em></p>"
+    for key, title, lk in [('location_inconsistencies','📍 Location Data Inconsistencies','location_inconsistencies'),('format_inconsistencies','📝 Format Inconsistencies','format_inconsistencies'),('relational_inconsistencies','🔗 Relational Inconsistencies','relational_inconsistencies'),('suspicious_values','🕵️ Suspicious Values','suspicious_values')]:
+        data = d.get(lk, [])
+        if data and isinstance(data,list) and any(data):
+            h+=f"<h4><span class='emoji'>{title} (AI Summary):</span></h4><ul>"
+            for item in data[:3]: 
+                if isinstance(item,dict): rid=html.escape(str(item.get('row_identifier','N/A')));issue=html.escape(item.get('issue_description',item.get('reason','N/A')));cips,vips=[],[]
+                if item.get('column'):cips.append(f"Col: '{html.escape(item.get('column'))}'")
+                if item.get('involved_columns') and isinstance(item.get('involved_columns'),dict):cips.append(f"Involved: {html.escape(str(item.get('involved_columns')))}")
+                if item.get('related_columns') and isinstance(item.get('related_columns'),list):cips.append(f"Related: {html.escape(str(item.get('related_columns')))}")
+                if item.get('inconsistent_examples'):vips.append(f"Examples: {html.escape(str(item.get('inconsistent_examples')[:2]))}")
+                if item.get('example_values') and isinstance(item.get('example_values'),dict):vips.append(f"Example Values: {html.escape(str(item.get('example_values')))}")
+                if item.get('suspicious_values_sample'):vips.append(f"Samples: {html.escape(str(item.get('suspicious_values_sample')[:2]))}")
+                cis="; ".join(cips);vis="; ".join(vips);h+=f"<li>Row ID/Context: {rid} -> {issue}<br/><em>{cis} {vis}</em></li>"
+            h+="</ul>"
+    im=d.get('inferred_column_meanings',[])
+    if im and isinstance(im,list) and any(im):
+        h+="<details class='collapsible-section'><summary>Inferred Column Meanings by AI</summary><div class='collapsible-content'><ul>"
+        for i in im: h+=f"<li><strong>{html.escape(i.get('column','N/A'))}:</strong> {html.escape(i.get('inferred_type','N/A'))} (Confidence: {html.escape(i.get('confidence','N/A'))})</li>" if isinstance(i,dict) else ""
+        h+="</ul></div></details>"
+    h+="</div>"; return h
+def _render_llm_general_recommendations(r):
+    if not r or not isinstance(r,list): return ""
+    fr=[str(rec) for rec in r if str(rec).strip() and "Review LLM" not in str(rec) and "skipped" not in str(rec).lower() and "N/A" != str(rec)]
+    if not fr: return ""
+    h="<div class='report-section card llm-recommendations-card alert-success'><h3 class='card-title'><span class='emoji'>🛠️</span> General AI Recommendations</h3><ul>"; h+="".join(f"<li>{html.escape(rec)}</li>" for rec in fr); h+="</ul></div>"; return h
+
+def _render_categorized_anomalies_report(categorized_anomalies_map, new_df_with_original_idx, title, anomaly_type_filter, max_rows_snippet, max_rows_full, section_id_prefix):
+    if not categorized_anomalies_map: return ""
+    relevant_rows_data = [] 
+    df_for_lookup = new_df_with_original_idx.copy()
+    if 'original_index' not in df_for_lookup.columns:
+        if df_for_lookup.index.name == 'original_index': df_for_lookup.reset_index(inplace=True)
+        else: return f"<p>Error rendering {title}: Missing original_index for lookup.</p>"
+    for original_idx_native_key, anomalies_for_row in categorized_anomalies_map.items():
+        current_type_anomalies = [a for a in anomalies_for_row if a['type'] == anomaly_type_filter]
+        if current_type_anomalies:
+            try:
+                match_series = pd.Series([False] * len(df_for_lookup)); orig_idx_col_dtype = df_for_lookup['original_index'].dtype
+                try:
+                    comp_key = original_idx_native_key
+                    if pd.api.types.is_numeric_dtype(orig_idx_col_dtype) or pd.api.types.is_integer_dtype(orig_idx_col_dtype) :
+                        if not isinstance(comp_key, (int, float)): comp_key = pd.to_numeric(original_idx_native_key, errors='ignore')
+                        if not pd.isna(comp_key): match_series = (df_for_lookup['original_index'] == comp_key)
+                    elif pd.api.types.is_string_dtype(orig_idx_col_dtype) or orig_idx_col_dtype == 'object': match_series = (df_for_lookup['original_index'].astype(str) == str(original_idx_native_key))
+                    else: match_series = (df_for_lookup['original_index'] == original_idx_native_key)
+                except Exception: pass
+                matching_df_rows = df_for_lookup[match_series]
+                if not matching_df_rows.empty: full_row_dict = matching_df_rows.iloc[0].drop(labels=['original_index'], errors='ignore').to_dict(); relevant_rows_data.append((original_idx_native_key, current_type_anomalies, full_row_dict))
+                else: relevant_rows_data.append((original_idx_native_key, current_type_anomalies, {"error": f"Row data for index '{original_idx_native_key}' not found."}))
+            except Exception: relevant_rows_data.append((original_idx_native_key, current_type_anomalies, {"error": "Row data lookup failed."}))
+    if not relevant_rows_data: return ""
+    
+    css_category_for_card = get_anomaly_css_category(anomaly_type_filter) # Get the CSS category for card styling
+    html_str = f"<div class='report-section card anomaly-category-card anomaly-{css_category_for_card}-card'>"
+    html_str += f"<h3 class='card-title'><span class='emoji'>⚠️</span> {html.escape(title)} ({len(relevant_rows_data)} detected)</h3>"
+    html_str += "<div class='table-responsive-wrapper'><table class='result-table table table-sm table-bordered table-hover'>"
+    html_str += "<thead><tr><th>Original Row Index</th><th>Anomalous Column(s)</th><th>Value(s)/Example(s)</th><th>Description(s)</th></tr></thead><tbody>"
+    
+    for i, (original_idx, anomalies, _) in enumerate(relevant_rows_data[:max_rows_snippet]):
+        cols_involved = sorted(list(set([a.get('column', 'N/A') for a in anomalies])))
+        vals_display = []
+        for a in anomalies:
+            if a['type'].endswith("_ai"):
+                details = a.get('details', {}); display_val = "AI Anomaly"
+                if isinstance(details, dict):
+                    if details.get('involved_columns') and isinstance(details['involved_columns'], dict) and details['involved_columns']: display_val = ", ".join([f"{k}: {v}" for k,v in list(details['involved_columns'].items())[:2]])
+                    elif details.get('inconsistent_examples') and isinstance(details['inconsistent_examples'], list) and details['inconsistent_examples']: display_val = str(details['inconsistent_examples'][0])
+                    elif details.get('suspicious_values_sample') and isinstance(details['suspicious_values_sample'], list) and details['suspicious_values_sample']: display_val = str(details['suspicious_values_sample'][0])
+                    else: display_val = format_value_for_display(a.get('value', "Details in row context"))
+                else: display_val = format_value_for_display(a.get('value', "Details in row context"))
+                vals_display.append(display_val)
+            else: vals_display.append(format_value_for_display(a.get('value', 'N/A')))
+        descs_html = "".join([f"<li>{html.escape(a['message'])}</li>" for a in anomalies])
+        html_str += f"<tr><td>{html.escape(str(original_idx))}</td><td>{html.escape(', '.join(cols_involved))}</td><td>{html.escape(', '.join(vals_display[:3]))}{'...' if len(vals_display) > 3 else ''}</td><td><ul>{descs_html}</ul></td></tr>"
+    html_str += "</tbody></table></div>"
+
+    if len(relevant_rows_data) > max_rows_snippet:
+        full_list_id = f"{section_id_prefix}-full-list-{anomaly_type_filter.replace('_','-')}" 
+        html_str += f"<p><a href='#' class='show-more-anomalies-link' data-target-id='{full_list_id}'>Showing {max_rows_snippet} of {len(relevant_rows_data)} {title.lower()}. Click to see up to {max_rows_full} more.</a></p>"
+        html_str += f"<div id='{full_list_id}' class='hidden-anomaly-details table-responsive-wrapper' style='display:none; margin-top:15px;'>"
+        html_str += f"<h4>Full List (up to {max_rows_full} more examples of {html.escape(title.lower())}):</h4>"
+        html_str += "<table class='result-table table table-sm table-bordered table-hover'>"
+        html_str += "<thead><tr><th>Original Row Index</th><th>Anomalous Column(s)</th><th>Value(s)/Example(s)</th><th>Description(s)</th><th>Full Row Context (JSON snippet)</th></tr></thead><tbody>"
+        for i, (original_idx, anomalies, full_row_data) in enumerate(relevant_rows_data[max_rows_snippet : max_rows_snippet + max_rows_full]):
+            cols_involved = sorted(list(set([a.get('column','N/A') for a in anomalies])))
+            vals_display_full = [] # Re-calculate for full list with same logic as above
+            for a in anomalies:
+                if a['type'].endswith("_ai"):
+                    details = a.get('details', {}); display_val_full = "AI Anomaly"
+                    if isinstance(details, dict):
+                        if details.get('involved_columns') and isinstance(details['involved_columns'], dict) and details['involved_columns']: display_val_full = ", ".join([f"{k}: {v}" for k,v in list(details['involved_columns'].items())[:2]])
+                        elif details.get('inconsistent_examples') and isinstance(details['inconsistent_examples'], list) and details['inconsistent_examples']: display_val_full = str(details['inconsistent_examples'][0])
+                        elif details.get('suspicious_values_sample') and isinstance(details['suspicious_values_sample'], list) and details['suspicious_values_sample']: display_val_full = str(details['suspicious_values_sample'][0])
+                        else: display_val_full = format_value_for_display(a.get('value', "Details in row context"))
+                    else: display_val_full = format_value_for_display(a.get('value', "Details in row context"))
+                    vals_display_full.append(display_val_full)
+                else: vals_display_full.append(format_value_for_display(a.get('value', 'N/A')))
+
+            descs_html = "".join([f"<li>{html.escape(a['message'])}</li>" for a in anomalies])
+            row_context_snippet = {k: format_value_for_display(v) for k, v in list(full_row_data.items())[:7] if k != 'original_index'} if isinstance(full_row_data, dict) and "error" not in full_row_data else {"error": full_row_data.get("error", "Context unavailable")}
+            html_str += f"<tr><td>{html.escape(str(original_idx))}</td><td>{html.escape(', '.join(cols_involved))}</td><td>{html.escape(', '.join(vals_display_full[:3]))}{'...' if len(vals_display_full) > 3 else ''}</td><td><ul>{descs_html}</ul></td><td><pre style='font-size:0.8em; max-height:100px; overflow:auto;'>{html.escape(json.dumps(row_context_snippet, indent=2))}</pre></td></tr>"
+        html_str += "</tbody></table></div>"
+    html_str += "</div>"; return html_str
+
+def generate_report_html(log_id, new_df_with_original_idx, historic_sample_df, schema_comp,
+                         new_stats, historic_stats, categorized_anomalies_map, llm_response,
+                         new_filename, historic_filename_desc):
+    report_html = f"<div class='report-container card'>"
+    report_html += f"<h2 class='card-title main-report-title'>IngestMate Edge: Data Drift & Anomaly Report</h2>"
+    report_html += f"<p class='log-id-display'><strong>Log ID:</strong> {log_id}</p><hr class='thin-hr'>"
+    new_rows_count = len(new_df_with_original_idx) if new_df_with_original_idx is not None else 'N/A'
+    hist_rows_sample_count = len(historic_sample_df) if historic_sample_df is not None else 'N/A'
+    report_html += f"<div class='report-section card overview-card'><h3 class='card-title'><span class='emoji'>📄</span> Analysis Overview</h3><p><strong>New Dataset:</strong> {html.escape(new_filename)} ({new_rows_count} rows)</p><p><strong>Historic Baseline:</strong> {html.escape(historic_filename_desc)} ({hist_rows_sample_count} sample rows shown for preview)</p></div>"
+    report_html += _render_llm_overall_assessment(llm_response.get("overall_assessment"))
+    report_html += _render_llm_schema_analysis(llm_response.get("schema_analysis"))
+    report_html += _render_llm_data_drift_anomaly_analysis(llm_response.get("data_drift_and_anomaly_analysis"))
+    report_html += _render_llm_semantic_analysis(llm_response.get("semantic_analysis")) 
+    report_html += _render_llm_general_recommendations(llm_response.get("general_actionable_recommendations"))
+    report_html += "<div class='report-section card dataset-comparison-card'><h3 class='card-title'><span class='emoji'>🆚</span> Detected Schema Comparison (Raw)</h3><div class='table-responsive-wrapper'><table class='result-table table table-sm table-bordered'>"
+    new_cols_str = ', '.join(schema_comp.get('new_cols',[])); missing_cols_str = ', '.join(schema_comp.get('missing_cols',[]))
+    report_html += f"<tr><td>New Columns</td><td class='column-list'><code>{html.escape(new_cols_str) if new_cols_str else 'None'}</code>{' (Count: ' + str(len(schema_comp.get('new_cols',[]))) + ')' if schema_comp.get('new_cols') else ''}</td></tr>"
+    report_html += f"<tr><td>Missing Columns</td><td class='column-list'><code>{html.escape(missing_cols_str) if missing_cols_str else 'None'}</code>{' (Count: ' + str(len(schema_comp.get('missing_cols',[]))) + ')' if schema_comp.get('missing_cols') else ''}</td></tr>"
+    report_html += f"<tr><td>Common Columns Count</td><td>{len(schema_comp.get('common_cols',[]))}</td></tr></tbody></table></div></div>"
+    
+    report_html += "<div class='report-section card data-preview-card'><h3 class='card-title'><span class='emoji'>📊</span> Data Previews (with Anomaly Cell Highlighting)</h3>"
+    # Updated Legend Structure with simplified categories
+    report_html += """
+        <div class="anomaly-legend card">
+            <h5 class="card-title legend-title">Anomaly Legend (Cell Highlighting Guide):</h5>
+            <ul>
+                <li>
+                    <span class="legend-color-box cell-anomaly-missing"></span>
+                    <strong>Missing Values</strong>
+                </li>
+                <li>
+                    <span class="legend-color-box cell-anomaly-format"></span>
+                    <strong>Format & Validation Issues</strong>
+                </li>
+                <li>
+                    <span class="legend-color-box cell-anomaly-mismatch"></span>
+                    <strong>Data Mismatches & Inconsistencies</strong>
+                </li>
+                <li>
+                    <span class="legend-color-box cell-anomaly-summary"></span>
+                    <strong>Row Summary Details</strong>
+                </li>
+            </ul>
+        </div>
+    """
+    report_html += f"<details class='collapsible-section' open><summary>New Data (First {PREVIEW_TABLE_MAX_ROWS} rows)</summary>"
+    report_html += get_preview_table_html(new_df_with_original_idx, " New Data Preview", PREVIEW_TABLE_MAX_ROWS, table_id="new_data_preview_table", categorized_anomalies_for_preview=categorized_anomalies_map)
+    report_html += "</details>"
+    if historic_sample_df is not None and not historic_sample_df.empty:
+        report_html += f"<details class='collapsible-section'><summary>Historic Data Sample (First {PREVIEW_TABLE_MAX_ROWS} Rows)</summary>"
+        report_html += get_preview_table_html(historic_sample_df, "Historic Data Preview", PREVIEW_TABLE_MAX_ROWS) 
+        report_html += "</details>"
+    else: report_html += "<p class='no-preview-note'>No historic data sample available for preview.</p>"
+    report_html += "</div>"
+
+    # Render anomaly sections - titles can be adjusted here if needed for broader categories,
+    # but the anomaly_type_filter remains specific for data retrieval.
+    report_html += _render_categorized_anomalies_report(categorized_anomalies_map, new_df_with_original_idx, "Statistical Outliers", ANOMALY_TYPE_DATA_MISMATCH, MAX_ANOMALY_ROWS_IN_REPORT_SNIPPET, MAX_FULL_ANOMALY_ROWS_IN_REPORT, "statout")
+    report_html += _render_categorized_anomalies_report(categorized_anomalies_map, new_df_with_original_idx, "Unexpected Null/Missing Values", ANOMALY_TYPE_MISSING, MAX_ANOMALY_ROWS_IN_REPORT_SNIPPET, MAX_FULL_ANOMALY_ROWS_IN_REPORT, "statnull") # Title adjusted
+    report_html += _render_categorized_anomalies_report(categorized_anomalies_map, new_df_with_original_idx, "Email Format Issues", ANOMALY_TYPE_INCORRECT_FORMAT, MAX_ANOMALY_ROWS_IN_REPORT_SNIPPET, MAX_FULL_ANOMALY_ROWS_IN_REPORT, "emailfmt")
+    # report_html += _render_categorized_anomalies_report(categorized_anomalies_map, new_df_with_original_idx, "Phone Format Issues", ANOMALY_TYPE_INCORRECT_FORMAT, MAX_ANOMALY_ROWS_IN_REPORT_SNIPPET, MAX_FULL_ANOMALY_ROWS_IN_REPORT, "phonefmt")
+    # report_html += _render_categorized_anomalies_report(categorized_anomalies_map, new_df_with_original_idx, "Invalid Future Dates (Logical Error)", ANOMALY_TYPE_INCORRECT_FORMAT, MAX_ANOMALY_ROWS_IN_REPORT_SNIPPET, MAX_FULL_ANOMALY_ROWS_IN_REPORT, "futuredt") # Title adjusted
+    # report_html += _render_categorized_anomalies_report(categorized_anomalies_map, new_df_with_original_idx, "Unparseable Date Strings", ANOMALY_TYPE_INCORRECT_FORMAT, MAX_ANOMALY_ROWS_IN_REPORT_SNIPPET, MAX_FULL_ANOMALY_ROWS_IN_REPORT, "unparsedt")
+    
+    # AI Detected Sections
+    report_html += _render_categorized_anomalies_report(categorized_anomalies_map, new_df_with_original_idx, "AI Detected: Location Data Mismatches", ANOMALY_TYPE_LOCATION_MISMATCH, MAX_ANOMALY_ROWS_IN_REPORT_SNIPPET, MAX_FULL_ANOMALY_ROWS_IN_REPORT, "ailloc")
+    report_html += _render_categorized_anomalies_report(categorized_anomalies_map, new_df_with_original_idx, "AI Detected: General Semantic Format/Validation Issues", ANOMALY_TYPE_INCORRECT_FORMAT, MAX_ANOMALY_ROWS_IN_REPORT_SNIPPET, MAX_FULL_ANOMALY_ROWS_IN_REPORT, "aisemfmt")
+    report_html += _render_categorized_anomalies_report(categorized_anomalies_map, new_df_with_original_idx, "AI Detected: General Semantic Relational Issues", ANOMALY_TYPE_DATA_MISMATCH, MAX_ANOMALY_ROWS_IN_REPORT_SNIPPET, MAX_FULL_ANOMALY_ROWS_IN_REPORT, "aisemrel")
+    report_html += _render_categorized_anomalies_report(categorized_anomalies_map, new_df_with_original_idx, "AI Detected: General Semantically Suspicious Values", ANOMALY_TYPE_DATA_MISMATCH, MAX_ANOMALY_ROWS_IN_REPORT_SNIPPET, MAX_FULL_ANOMALY_ROWS_IN_REPORT, "aisemsus")
+    
+    report_html += "<hr class='thin-hr'><p style='text-align:center; font-style:italic; margin-top:20px;'>End of IngestMate Edge Report</p></div>"
+    return report_html
+
+def run_analysis(new_filepath, historic_csv_filepath=None):
+    log_id = uuid.uuid4(); db_conn = get_db_connection();
+    if db_conn: ensure_log_table_exists(db_conn)
+    analysis_output = {'log_id': str(log_id)}; new_df_raw, historic_sample_df, historic_column_stats = None, pd.DataFrame(), {}; new_df_with_original_idx = None; historic_total_rows_db = None
+    llm_response_structure_template = get_llm_analysis("template_log_id", pd.DataFrame(), pd.DataFrame(), {}, {}, {}, {}, 0,0,None)[0] 
+    llm_response = llm_response_structure_template; raw_llm_text_for_debug = "LLM not called."
+    new_filename = os.path.basename(new_filepath) if new_filepath else "N/A"
+    report_html = f"<div class='card error-card'><h2>Analysis Pending (Log ID: {log_id})</h2><p>Processing...</p></div>"
+    historic_preview_html = "<p>Historic data preview pending.</p>"; new_data_preview_html = "<p>New data preview pending.</p>" 
+    try:
+        global _stats_cache; _stats_cache = {}
+        new_df_raw = load_new_data(new_filepath); analysis_output['new_data_shape'] = new_df_raw.shape if new_df_raw is not None else (0,0)
+        new_df_with_original_idx = new_df_raw.copy()
+        if new_df_with_original_idx.index.name == 'original_index': new_df_with_original_idx.reset_index(inplace=True)
+        elif 'original_index' not in new_df_with_original_idx.columns: new_df_with_original_idx.reset_index(inplace=True); new_df_with_original_idx.rename(columns={'index':'original_index'}, inplace=True, errors='ignore')
+        new_data_preview_html = get_preview_table_html(new_df_with_original_idx, "New Data Preview (Initial)", table_id="new_data_preview_table_main")
+        num_cols, cat_cols, dt_cols, id_cols, primary_id = identify_column_types(new_df_with_original_idx); analysis_output.update({'num_cols':num_cols, 'cat_cols':cat_cols, 'dt_cols':dt_cols, 'id_cols':id_cols, 'primary_id':primary_id})
+        new_df_stats = calculate_basic_stats(new_df_with_original_idx, num_cols, cat_cols + dt_cols); analysis_output['new_data_stats'] = new_df_stats
+        historic_filename_description = "N/A"
+        if HISTORIC_TABLE_NAME and db_conn: historic_total_rows_db, historic_sample_df, historic_column_stats = _get_cached_or_compute(f"historic_data_{HISTORIC_TABLE_NAME}", fetch_historic_data, db_conn, HISTORIC_TABLE_NAME); historic_filename_description = f"Database Table: {HISTORIC_TABLE_NAME}"; analysis_output['historic_data_source'] = "Database"
+        elif historic_csv_filepath and os.path.exists(historic_csv_filepath): historic_sample_df = load_new_data(historic_csv_filepath); historic_total_rows_db = len(historic_sample_df) if historic_sample_df is not None else 0; h_num, h_cat, h_dt, _, _ = identify_column_types(historic_sample_df); historic_column_stats = calculate_basic_stats(historic_sample_df, h_num, h_cat + h_dt); historic_filename_description = f"CSV File: {os.path.basename(historic_csv_filepath)}"; analysis_output['historic_data_source'] = "CSV Fallback"
+        else: analysis_output['historic_data_source'] = "None Available"; historic_filename_description = "No Historic Baseline Available"
+        if historic_sample_df is not None and not historic_sample_df.empty: analysis_output['historic_sample_shape'] = historic_sample_df.shape; historic_preview_html = get_preview_table_html(historic_sample_df.head(PREVIEW_TABLE_MAX_ROWS), "Historic Data Sample") 
+        analysis_output['historic_column_stats'] = historic_column_stats; analysis_output['historic_total_rows'] = historic_total_rows_db
+        schema_comp = compare_schemas(new_df_with_original_idx.columns, list(historic_column_stats.keys()) if historic_column_stats else (list(historic_sample_df.columns) if historic_sample_df is not None and not historic_sample_df.empty else [])); analysis_output['schema_comparison'] = schema_comp
+        categorized_anomalies_map = detect_row_level_anomalies(new_df_with_original_idx, historic_column_stats, num_cols, primary_id) 
+        llm_anomaly_sample_messages = {}; count = 0
+        for idx_key_native, anomalies_list in categorized_anomalies_map.items():
+            if count >= MAX_ANOMALY_ROWS_TO_SHOW_LLM: break
+            llm_anomaly_sample_messages[str(idx_key_native)] = [a['message'] for a in anomalies_list[:2]]; count +=1
+        new_df_llm_sample = new_df_with_original_idx.head(MAX_ROWS_FOR_LLM_DATA_PREVIEW)
+        hist_df_llm_sample = historic_sample_df.head(MAX_ROWS_FOR_LLM_DATA_PREVIEW) if historic_sample_df is not None and not historic_sample_df.empty else pd.DataFrame()
+        llm_response, raw_llm_text_for_debug = get_llm_analysis(str(log_id), new_df_llm_sample, hist_df_llm_sample, new_df_stats, historic_column_stats, schema_comp, llm_anomaly_sample_messages, len(new_df_with_original_idx), historic_total_rows_db, primary_id)
+        analysis_output['llm_full_response'] = llm_response; analysis_output['llm_raw_text_response'] = raw_llm_text_for_debug
+        if llm_response and 'semantic_analysis' in llm_response:
+            _process_llm_semantic_anomalies_into_map(llm_response['semantic_analysis'], categorized_anomalies_map, new_df_llm_sample['original_index'] if 'original_index' in new_df_llm_sample else pd.Series(dtype='object'))
+        analysis_output['categorized_anomalies_map'] = categorized_anomalies_map
+        log_summary_text = llm_response.get("overall_assessment", {}).get("quality_summary", "AI summary unavailable.")
+        status_for_log = "Success";
+        if "partially incorrect" in log_summary_text or "failed" in log_summary_text or "skipped" in log_summary_text.lower(): status_for_log = "Success with AI issues"
+        analysis_output['llm_summary_text_for_log'] = log_summary_text
+        report_html = generate_report_html(str(log_id), new_df_with_original_idx, historic_sample_df.head(PREVIEW_TABLE_MAX_ROWS) if historic_sample_df is not None else pd.DataFrame(), schema_comp, new_df_stats, historic_column_stats, categorized_anomalies_map, llm_response, new_filename, historic_filename_description)
+        log_analysis_run_db(db_conn, log_id, status_for_log, filename=new_filename, summary=log_summary_text)
+        return report_html, historic_preview_html, new_data_preview_html, str(log_id), _sanitize_for_json(analysis_output)
     except Exception as e:
-        print(f"UNEXPECTED CRITICAL ANALYSIS ERROR: {e}")
-        import traceback; traceback.print_exc()
-        error_html = f"<h2>Analysis Failed Unexpectedly</h2><hr><p><strong>An unexpected critical error occurred:</strong> {e}</p><p>Please check server logs.</p>"
-        return error_html, "<p>Preview N/A</p>", "<p>Preview N/A</p>"
+        import traceback; tb_str = traceback.format_exc(); print(f"Critical Error in run_analysis (Log ID: {log_id}): {e}\n{tb_str}")
+        error_message_for_display = f"Error: {type(e).__name__} - {html.escape(str(e))}. Check server logs."
+        report_html = f"<div class='card error-card'><h2>Analysis Failed Critically (Log ID: {log_id})</h2><p>{error_message_for_display}</p><details><summary>Traceback (partial)</summary><pre style='white-space: pre-wrap; word-break: break-all;'>{html.escape(tb_str[:1500])}</pre></details></div>"
+        log_summary = analysis_output.get('llm_summary_text_for_log', "Critical failure before AI stage.")
+        log_analysis_run_db(db_conn, log_id, "Critical Failure", f"{type(e).__name__}: {str(e)}\nTrace: {tb_str[:5000]}", filename=new_filename, summary=log_summary)
+        if 'log_id' not in analysis_output: analysis_output['log_id'] = str(log_id)
+        if 'llm_full_response' not in analysis_output or not analysis_output['llm_full_response'].get('overall_assessment'): analysis_output['llm_full_response'] = llm_response_structure_template; analysis_output['llm_raw_text_response'] = raw_llm_text_for_debug if raw_llm_text_for_debug else "LLM not called due to critical error."
+        return report_html, historic_preview_html, new_data_preview_html, str(log_id), _sanitize_for_json(analysis_output)
     finally:
         if db_conn:
-            db_conn.close()
-            print("Database connection closed.")
+            try: db_conn.close()
+            except Exception as e_close: print(f"Error closing DB connection: {e_close}")

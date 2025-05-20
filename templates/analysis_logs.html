@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Review history of data analysis runs, including status, summaries, and errors.">
+    <title>Data Analysis Logs - Data Monitoring Tool</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="icon" href="https://aionos.io/wp-content/uploads/2024/04/cropped-file-1-32x32.png">
+    <style>
+        /* Styles for expandable rows */
+        .log-row.expandable {
+            cursor: pointer;
+        }
+        .log-row.expandable:hover td:not(.actions-cell) { /* Exclude actions cell from hover effect if any */
+            background-color: #f0f8ff; /* Light blue hover */
+        }
+        .details-row {
+            display: none; /* Hidden by default */
+            background-color: #f9f9f9;
+        }
+        .details-row.expanded {
+            display: table-row; /* Show as a table row */
+        }
+        .details-cell {
+            padding: 15px 20px !important; /* More padding for details, override default */
+            border-top: 1px dashed #ddd;
+            text-align: left;
+        }
+        .details-cell h5 {
+            margin-top: 0;
+            margin-bottom: 8px;
+            color: var(--primary-color);
+        }
+        .details-cell pre {
+            white-space: pre-wrap; /* Wrap long lines */
+            word-break: normal; /* Avoid breaking words */
+            background-color: #efefef;
+            padding: 10px;
+            border-radius: 4px;
+            max-height: 300px; /* Limit height and make scrollable */
+            overflow-y: auto;
+            font-size: 0.85em;
+        }
+        .expand-icon {
+            display: inline-block;
+            margin-right: 8px;
+            font-weight: bold;
+            transition: transform 0.2s ease-in-out;
+            color: var(--primary-color);
+        }
+        .log-row.expanded .expand-icon {
+            transform: rotate(45deg); /* '+' to 'x' or arrow rotation */
+        }
+    </style>
+</head>
+<body>
+    <header class="main-nav-container">
+        <nav class="main-nav">
+            <a href="{{ url_for('index') }}">New Analysis</a>
+            <a href="{{ url_for('analysis_logs') }}">View Analysis Logs</a>
+        </nav>
+    </header>
+
+    <main class="container page-container">
+        <header class="page-header">
+            <h1>Analysis Log History</h1>
+            <p class="subtitle">Review past data analysis runs. Click on a row to see more details.</p> {# Updated subtitle #}
+        </header>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <ul class="flashes" role="alert">
+            {% for category, message in messages %}
+              <li class="{{ category }}">{{ message }}</li>
+            {% endfor %}
+            </ul>
+          {% endif %}
+        {% endwith %}
+
+        {% if error_message %}
+            <section class="card error-card">
+                <h2 class="card-title">Log Retrieval Error</h2>
+                <p>{{ error_message }}</p>
+                <p>Please check your configuration or contact an administrator.</p>
+            </section>
+        {% elif logs %}
+            <section class="logs-table-section table-responsive-wrapper">
+                <table class="log-table result-table table table-striped table-hover table-sm">
+                    <caption>Overview of recent data analysis pipeline runs. Click rows for details.</caption>
+                    <thead>
+                        <tr>
+                            <th scope="col" style="width: 1%;" class="no-click"></th> <!-- For expand icon -->
+                            <th scope="col">Pipeline Run ID</th>
+                            <th scope="col">Date & Time (UTC)</th>
+                            <th scope="col">Status</th>
+                            <th scope="col">New Data File</th>
+                            <th scope="col">Summary / Error Snippet</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for log_entry in logs %}
+                        <tr class="log-row expandable" data-log-id="{{ log_entry.log_id|string }}">
+                            <td class="no-click"><span class="expand-icon">+</span></td>
+                            <td>
+                                <span class="log-id-text" title="Log ID: {{ log_entry.log_id|string }}">{{ log_entry.log_id|string|truncate(12, True) }}</span>
+                            </td>
+                            <td class="timestamp-cell">{{ log_entry.run_timestamp.strftime('%Y-%m-%d %H:%M:%S') if log_entry.run_timestamp else 'N/A' }}</td>
+                            <td class="status-cell-container">
+                                <span class="status-badge {{ 'status-success' if log_entry.status == 'Success' else ('status-warning' if 'Warning' in log_entry.status or 'AI issue' in log_entry.status else 'status-failure') }}">
+                                    <span class="status-icon" aria-hidden="true">{{ '✓' if log_entry.status == 'Success' else ('⚠' if 'Warning' in log_entry.status or 'AI issue' in log_entry.status else '✕') }}</span>
+                                    {{ log_entry.status }}
+                                </span>
+                            </td>
+                            <td>{{ log_entry.new_data_filename or 'N/A' }}</td>
+                            <td class="summary-error-cell" title="{{ log_entry.analysis_summary or log_entry.error_message or 'No summary available' }}">
+                                {{ (log_entry.analysis_summary or log_entry.error_message or 'No summary available')|truncate(70, True, '...') }} {# Slightly shorter truncate for main row #}
+                            </td>
+                        </tr>
+                        <tr class="details-row" id="details-{{ log_entry.log_id|string }}">
+                            <td colspan="6" class="details-cell"> {# Colspan to match number of columns above #}
+                                <h4>Full Details for Log ID: {{ log_entry.log_id|string }}</h4>
+                                {% if log_entry.analysis_summary %}
+                                    <h5>Analysis Summary:</h5>
+                                    <pre>{{ log_entry.analysis_summary }}</pre>
+                                {% endif %}
+                                {% if log_entry.error_message %}
+                                    <h6>Error Message:</h6>
+                                    <pre>{{ log_entry.error_message }}</pre>
+                                {% endif %}
+                                {% if not log_entry.analysis_summary and not log_entry.error_message %}
+                                    <p>No further details available for this log entry.</p>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </section>
+        {% else %}
+            <section class="no-data-message card">
+                <h2 class="card-title">No Logs Found</h2>
+                <p>No analysis logs found in the database. Run an analysis to see logs here.</p>
+            </section>
+        {% endif %}
+    </main>
+
+    <footer class="page-footer">
+        <p>© {{ SCRIPT_LOAD_TIME.year if SCRIPT_LOAD_TIME else '' }} Data Analysis Tool.</p>
+    </footer>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const expandableRows = document.querySelectorAll('.log-row.expandable');
+
+            expandableRows.forEach(row => {
+                row.addEventListener('click', function(event) {
+                    // Prevent toggling if a link or button inside the row was clicked
+                    if (event.target.tagName === 'A' || event.target.tagName === 'BUTTON' || event.target.closest('.no-click')) {
+                        return;
+                    }
+
+                    const logId = this.dataset.logId;
+                    const detailsRow = document.getElementById(`details-${logId}`);
+                    const expandIcon = this.querySelector('.expand-icon');
+
+                    if (detailsRow) {
+                        const isExpanded = detailsRow.classList.toggle('expanded');
+                        this.classList.toggle('expanded', isExpanded); // Add/remove class on main row as well
+                        if (expandIcon) {
+                            expandIcon.textContent = isExpanded ? '−' : '+'; // Change icon
+                            expandIcon.style.transform = isExpanded ? 'rotate(0deg)' : 'rotate(0deg)'; // Keep icon simple or rotate more dynamically
+                        }
+                    }
+                });
+            });
+        });
+    </script>
+</body>
+</html>
