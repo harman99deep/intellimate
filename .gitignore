@@ -84,7 +84,7 @@ instance/
 # --- Project Specific ---
 # Temporary uploaded files
 uploads/
-
+archive/
 # Generated reports and plots (if saved locally by analysis_engine)
 # Although the Flask app shows output in browser, the engine might still save locally if run standalone
 data_drift_anomaly_report.txt

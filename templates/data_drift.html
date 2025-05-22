@@ -1,0 +1,535 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Data Drift Analysis - Run {{ run_id }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="icon" href="https://aionos.io/wp-content/uploads/2024/04/cropped-file-1-32x32.png">
+</head>
+<body>
+    {% include 'analysis_nav.html' %}
+
+    <main class="container analysis-content">
+        <div class="page-header">
+            <h1 class="page-title">
+                <span class="page-icon">📈</span>
+                Data Drift Analysis
+            </h1>
+            <p class="page-subtitle">Statistical changes in data distribution, mean, variance, and patterns</p>
+        </div>
+
+        {% if data_drift.statistical_drifts or data_drift.distribution_drifts %}
+            
+            <!-- Statistical Drift Section -->
+            {% if data_drift.statistical_drifts %}
+                <section class="analysis-section card">
+                    <h2 class="section-title">
+                        <span class="section-icon">📊</span>
+                        Statistical Drift Detection
+                        <span class="section-count">{{ data_drift.statistical_drifts|length }}</span>
+                    </h2>
+                    
+                    <div class="drift-grid">
+                        {% for drift in data_drift.statistical_drifts %}
+                            <div class="drift-card {{ drift.severity.lower() }}">
+                                <div class="drift-header">
+                                    <div class="drift-info">
+                                        <h3 class="drift-column">{{ drift.column }}</h3>
+                                        <span class="drift-type">{{ drift.type.replace('_', ' ').title() }}</span>
+                                    </div>
+                                    <span class="severity-badge {{ drift.severity.lower() }}">{{ drift.severity }}</span>
+                                </div>
+                                
+                                <div class="drift-content">
+                                    <p class="drift-description">{{ drift.description }}</p>
+                                    
+                                    <div class="drift-metrics">
+                                        <div class="metric-row">
+                                            <span class="metric-label">Baseline Value:</span>
+                                            <span class="metric-value">{{ "%.2f"|format(drift.baseline_value) }}</span>
+                                        </div>
+                                        <div class="metric-row">
+                                            <span class="metric-label">Current Value:</span>
+                                            <span class="metric-value">{{ "%.2f"|format(drift.current_value) }}</span>
+                                        </div>
+                                        <div class="metric-row">
+                                            <span class="metric-label">Change:</span>
+                                            <span class="metric-value change-highlight">{{ "%.1f"|format(drift.change_percentage) }}%</span>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="drift-score">
+                                        <div class="score-bar">
+                                            <div class="score-fill {{ drift.severity.lower() }}" 
+                                                 style="width: {{ (drift.drift_score * 100)|min(100) }}%"></div>
+                                        </div>
+                                        <span class="score-text">Drift Score: {{ "%.3f"|format(drift.drift_score) }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </section>
+            {% endif %}
+
+            <!-- Distribution Drift Section -->
+            {% if data_drift.distribution_drifts %}
+                <section class="analysis-section card">
+                    <h2 class="section-title">
+                        <span class="section-icon">📉</span>
+                        Distribution Drift Detection
+                        <span class="section-count">{{ data_drift.distribution_drifts|length }}</span>
+                    </h2>
+                    
+                    <div class="distribution-info">
+                        <p class="info-text">
+                            Distribution drift is detected using statistical tests that compare the shape and spread 
+                            of data between baseline and current datasets. A significant p-value indicates the 
+                            distributions are statistically different.
+                        </p>
+                    </div>
+
+                    <div class="drift-grid">
+                        {% for drift in data_drift.distribution_drifts %}
+                            <div class="drift-card {{ drift.severity.lower() }}">
+                                <div class="drift-header">
+                                    <div class="drift-info">
+                                        <h3 class="drift-column">{{ drift.column }}</h3>
+                                        <span class="drift-type">{{ drift.type.replace('_', ' ').title() }}</span>
+                                    </div>
+                                    <span class="severity-badge {{ drift.severity.lower() }}">{{ drift.severity }}</span>
+                                </div>
+                                
+                                <div class="drift-content">
+                                    <p class="drift-description">{{ drift.description }}</p>
+                                    
+                                    <div class="drift-metrics">
+                                        <div class="metric-row">
+                                            <span class="metric-label">Test Statistic:</span>
+                                            <span class="metric-value">{{ "%.4f"|format(drift.test_statistic) }}</span>
+                                        </div>
+                                        <div class="metric-row">
+                                            <span class="metric-label">P-Value:</span>
+                                            <span class="metric-value">{{ "%.4f"|format(drift.p_value) }}</span>
+                                        </div>
+                                        <div class="metric-row">
+                                            <span class="metric-label">Significance:</span>
+                                            <span class="metric-value significance">{{ "Significant" if drift.p_value < 0.05 else "Not Significant" }}</span>
+                                        </div>
+                                    </div>
+                                    
+                                    <div class="drift-score">
+                                        <div class="score-bar">
+                                            <div class="score-fill {{ drift.severity.lower() }}" 
+                                                 style="width: {{ (drift.drift_score * 100)|min(100) }}%"></div>
+                                        </div>
+                                        <span class="score-text">KS Statistic: {{ "%.3f"|format(drift.drift_score) }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </section>
+            {% endif %}
+
+            <!-- Drift Summary -->
+            <section class="analysis-section card drift-summary">
+                <h2 class="section-title">
+                    <span class="section-icon">📋</span>
+                    Drift Analysis Summary
+                </h2>
+                
+                <div class="summary-stats">
+                    <div class="summary-grid">
+                        <div class="summary-item">
+                            <div class="summary-value">{{ data_drift.statistical_drifts|length + data_drift.distribution_drifts|length }}</div>
+                            <div class="summary-label">Total Drifts Detected</div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-value critical">{{ (data_drift.statistical_drifts + data_drift.distribution_drifts)|selectattr("severity", "equalto", "Critical")|list|length }}</div>
+                            <div class="summary-label">Critical Drifts</div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-value medium">{{ (data_drift.statistical_drifts + data_drift.distribution_drifts)|selectattr("severity", "equalto", "Medium")|list|length }}</div>
+                            <div class="summary-label">Medium Drifts</div>
+                        </div>
+                        <div class="summary-item">
+                            <div class="summary-value low">{{ (data_drift.statistical_drifts + data_drift.distribution_drifts)|selectattr("severity", "equalto", "Low")|list|length }}</div>
+                            <div class="summary-label">Low Drifts</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="recommendations">
+                    <h3>Recommendations</h3>
+                    <ul class="recommendation-list">
+                        {% if (data_drift.statistical_drifts + data_drift.distribution_drifts)|selectattr("severity", "equalto", "Critical")|list|length > 0 %}
+                            <li class="recommendation critical">
+                                <strong>Immediate Action Required:</strong> Critical drift detected. Review data pipeline and investigate root causes.
+                            </li>
+                        {% endif %}
+                        {% if data_drift.statistical_drifts|selectattr("type", "equalto", "mean_drift")|list|length > 0 %}
+                            <li class="recommendation">
+                                Mean drift detected - check for changes in data sources or processing logic.
+                            </li>
+                        {% endif %}
+                        {% if data_drift.statistical_drifts|selectattr("type", "equalto", "variance_drift")|list|length > 0 %}
+                            <li class="recommendation">
+                                Variance drift detected - data quality or collection process may have changed.
+                            </li>
+                        {% endif %}
+                        {% if data_drift.distribution_drifts|length > 0 %}
+                            <li class="recommendation">
+                                Distribution drift detected - underlying data generation process may have shifted.
+                            </li>
+                        {% endif %}
+                        <li class="recommendation">
+                            Consider updating baseline dataset if drift is expected and acceptable.
+                        </li>
+                    </ul>
+                </div>
+            </section>
+
+        {% else %}
+            <!-- No Drift Detected -->
+            <section class="analysis-section card no-issues">
+                <div class="no-issues-content">
+                    <div class="no-issues-icon">✅</div>
+                    <h2>No Data Drift Detected</h2>
+                    <p>Your current dataset shows no significant statistical drift compared to the baseline. 
+                       The data distribution patterns remain consistent.</p>
+                    
+                    <div class="no-issues-details">
+                        <h3>What this means:</h3>
+                        <ul>
+                            <li>Statistical properties (mean, variance, range) are within expected bounds</li>
+                            <li>Data distributions have not significantly changed</li>
+                            <li>Your data pipeline appears to be stable</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+        {% endif %}
+
+        <!-- Navigation Actions -->
+        <div class="page-actions">
+            <a href="{{ url_for('view_overview', run_id=run_id) }}" class="btn btn-outline">
+                <span class="btn-icon">📊</span>
+                Back to Overview
+            </a>
+            <a href="{{ url_for('view_volume_anomalies', run_id=run_id) }}" class="btn btn-primary">
+                <span class="btn-icon">📦</span>
+                Volume Anomalies
+            </a>
+        </div>
+    </main>
+
+    <style>
+        .drift-grid {
+            display: grid;
+            gap: 20px;
+            margin-top: 20px;
+        }
+
+        .drift-card {
+            background: white;
+            border-radius: var(--border-radius-md);
+            box-shadow: var(--card-shadow);
+            overflow: hidden;
+            border-left: 4px solid #e9ecef;
+        }
+
+        .drift-card.critical {
+            border-left-color: #dc3545;
+        }
+
+        .drift-card.medium {
+            border-left-color: #ffc107;
+        }
+
+        .drift-card.low {
+            border-left-color: #28a745;
+        }
+
+        .drift-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 20px 20px 0 20px;
+        }
+
+        .drift-column {
+            margin: 0;
+            font-size: 1.2em;
+            color: var(--primary-color);
+        }
+
+        .drift-type {
+            font-size: 0.9em;
+            color: #6c757d;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .severity-badge {
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.8em;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .severity-badge.critical {
+            background-color: #dc3545;
+            color: white;
+        }
+
+        .severity-badge.medium {
+            background-color: #ffc107;
+            color: #000;
+        }
+
+        .severity-badge.low {
+            background-color: #28a745;
+            color: white;
+        }
+
+        .drift-content {
+            padding: 20px;
+        }
+
+        .drift-description {
+            margin: 0 0 15px 0;
+            color: #495057;
+            line-height: 1.5;
+        }
+
+        .drift-metrics {
+            background-color: #f8f9fa;
+            padding: 15px;
+            border-radius: var(--border-radius-sm);
+            margin-bottom: 15px;
+        }
+
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            margin-bottom: 8px;
+        }
+
+        .metric-row:last-child {
+            margin-bottom: 0;
+        }
+
+        .metric-label {
+            font-weight: 500;
+            color: #6c757d;
+        }
+
+        .metric-value {
+            font-family: monospace;
+            font-weight: 600;
+        }
+
+        .change-highlight {
+            color: #dc3545;
+        }
+
+        .significance {
+            color: #dc3545;
+            font-weight: 600;
+        }
+
+        .drift-score {
+            text-align: center;
+        }
+
+        .score-bar {
+            width: 100%;
+            height: 8px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            overflow: hidden;
+            margin-bottom: 8px;
+        }
+
+        .score-fill {
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+
+        .score-fill.critical {
+            background-color: #dc3545;
+        }
+
+        .score-fill.medium {
+            background-color: #ffc107;
+        }
+
+        .score-fill.low {
+            background-color: #28a745;
+        }
+
+        .score-text {
+            font-size: 0.9em;
+            color: #6c757d;
+        }
+
+        .distribution-info {
+            background-color: #e3f2fd;
+            padding: 15px;
+            border-radius: var(--border-radius-sm);
+            margin-bottom: 20px;
+            border-left: 4px solid #2196f3;
+        }
+
+        .info-text {
+            margin: 0;
+            color: #1565c0;
+        }
+
+        .drift-summary {
+            margin-top: 30px;
+        }
+
+        .summary-stats {
+            margin-bottom: 30px;
+        }
+
+        .summary-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 20px;
+        }
+
+        .summary-item {
+            text-align: center;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: var(--border-radius-sm);
+        }
+
+        .summary-value {
+            font-size: 2em;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .summary-value.critical {
+            color: #dc3545;
+        }
+
+        .summary-value.medium {
+            color: #ffc107;
+        }
+
+        .summary-value.low {
+            color: #28a745;
+        }
+
+        .summary-label {
+            color: #6c757d;
+            font-size: 0.9em;
+        }
+
+        .recommendations h3 {
+            margin-bottom: 15px;
+            color: var(--primary-color);
+        }
+
+        .recommendation-list {
+            list-style: none;
+            padding: 0;
+        }
+
+        .recommendation {
+            padding: 10px 15px;
+            margin-bottom: 10px;
+            background-color: #f8f9fa;
+            border-left: 4px solid #007bff;
+            border-radius: var(--border-radius-sm);
+        }
+
+        .recommendation.critical {
+            background-color: #f8d7da;
+            border-left-color: #dc3545;
+            color: #721c24;
+        }
+
+        .no-issues {
+            text-align: center;
+            padding: 60px 40px;
+        }
+
+        .no-issues-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+        }
+
+        .no-issues h2 {
+            color: #28a745;
+            margin-bottom: 15px;
+        }
+
+        .no-issues-details {
+            margin-top: 30px;
+            text-align: left;
+            max-width: 500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .no-issues-details h3 {
+            color: var(--primary-color);
+            margin-bottom: 10px;
+        }
+
+        .no-issues-details ul {
+            color: #6c757d;
+        }
+
+        .page-actions {
+            margin-top: 40px;
+            text-align: center;
+        }
+
+        .page-actions .btn {
+            margin: 0 10px;
+        }
+
+        @media (max-width: 768px) {
+            .drift-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }
+
+            .summary-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+
+            .page-actions .btn {
+                display: block;
+                margin: 10px 0;
+                width: 100%;
+            }
+        }
+    </style>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Animate score bars
+            const scoreFills = document.querySelectorAll('.score-fill');
+            scoreFills.forEach(fill => {
+                const width = fill.style.width;
+                fill.style.width = '0%';
+                setTimeout(() => {
+                    fill.style.width = width;
+                }, 100);
+            });
+        });
+    </script>
+</body>
+</html>
+                                

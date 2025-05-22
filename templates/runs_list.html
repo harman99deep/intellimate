@@ -1,0 +1,614 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analysis History - Data Drift Monitor</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="icon" href="https://aionos.io/wp-content/uploads/2024/04/cropped-file-1-32x32.png">
+</head>
+<body>
+    <header class="main-nav-container">
+        <nav class="main-nav">
+            <a href="{{ url_for('index') }}" class="nav-brand">
+                <span class="nav-icon">🛡️</span>
+                Data Drift Monitor
+            </a>
+            <div class="nav-links">
+                <a href="{{ url_for('index') }}" class="nav-link">Dashboard</a>
+                <a href="{{ url_for('list_runs') }}" class="nav-link active">History</a>
+            </div>
+        </nav>
+    </header>
+
+    <main class="container">
+        <div class="page-header">
+            <h1 class="page-title">
+                <span class="page-icon">📋</span>
+                Analysis History
+            </h1>
+            <p class="page-subtitle">Review past data drift analysis runs and their results</p>
+        </div>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <ul class="flashes" role="alert">
+            {% for category, message in messages %}
+              <li class="{{ category }}">{{ message }}</li>
+            {% endfor %}
+            </ul>
+          {% endif %}
+        {% endwith %}
+
+        {% if error_message %}
+            <!-- Error State -->
+            <section class="error-section card">
+                <div class="error-content">
+                    <div class="error-icon">⚠️</div>
+                    <h2>Unable to Load Analysis History</h2>
+                    <p>There was a problem accessing the analysis history from the database.</p>
+                    
+                    <div class="error-details">
+                        <strong>Error Details:</strong>
+                        <code>{{ error_message }}</code>
+                    </div>
+                    
+                    <div class="troubleshooting">
+                        <h3>Troubleshooting Steps:</h3>
+                        <ol>
+                            <li>Check if your database is running and accessible</li>
+                            <li>Verify database connection settings in your .env file</li>
+                            <li>Ensure the database user has proper permissions</li>
+                            <li>Try running your first analysis to create the log table</li>
+                        </ol>
+                    </div>
+                    
+                    <div class="error-actions">
+                        <a href="{{ url_for('health_check') }}" class="btn btn-outline" target="_blank">
+                            <span class="btn-icon">🔍</span>
+                            Check System Health
+                        </a>
+                        <a href="{{ url_for('index') }}" class="btn btn-primary">
+                            <span class="btn-icon">🏠</span>
+                            Back to Dashboard
+                        </a>
+                    </div>
+                </div>
+            </section>
+            
+        {% elif runs %}
+            <!-- Analysis Runs Table -->
+            <section class="runs-section card">
+                <h2 class="section-title">
+                    <span class="section-icon">📊</span>
+                    Recent Analysis Runs
+                    <span class="section-count">{{ runs|length }}</span>
+                </h2>
+
+                <div class="table-responsive">
+                    <table class="runs-table">
+                        <thead>
+                            <tr>
+                                <th>Run ID</th>
+                                <th>Date & Time</th>
+                                <th>Status</th>
+                                <th>Current Dataset</th>
+                                <th>Baseline</th>
+                                <th>Issues Found</th>
+                                <th>Critical</th>
+                                <th>Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for run in runs %}
+                                <tr class="run-row">
+                                    <td class="run-id">
+                                        <a href="{{ url_for('view_overview', run_id=run.log_id) }}" 
+                                           class="run-link">
+                                            {{ run.log_id|string|truncate(12, True) }}
+                                        </a>
+                                    </td>
+                                    <td class="run-timestamp">
+                                        {{ run.run_timestamp.strftime('%Y-%m-%d %H:%M') if run.run_timestamp else 'N/A' }}
+                                    </td>
+                                    <td class="run-status">
+                                        <span class="status-badge {{ 'success' if run.status == 'completed' else 'error' }}">
+                                            {% if run.status == 'completed' %}
+                                                ✅ Completed
+                                            {% elif 'failed' in run.status.lower() %}
+                                                ❌ Failed
+                                            {% else %}
+                                                ⚠️ {{ run.status|title }}
+                                            {% endif %}
+                                        </span>
+                                    </td>
+                                    <td class="dataset-name">
+                                        {{ run.current_filename|default('N/A') }}
+                                    </td>
+                                    <td class="baseline-name">
+                                        {{ run.baseline_filename|default('N/A') }}
+                                    </td>
+                                    <td class="issues-count">
+                                        <span class="count-badge {{ 'high' if run.total_issues > 5 else ('medium' if run.total_issues > 0 else 'low') }}">
+                                            {{ run.total_issues|default(0) }}
+                                        </span>
+                                    </td>
+                                    <td class="critical-count">
+                                        {% if run.critical_issues > 0 %}
+                                            <span class="count-badge critical">{{ run.critical_issues }}</span>
+                                        {% else %}
+                                            <span class="count-badge none">0</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="run-actions">
+                                        <div class="action-buttons">
+                                            <a href="{{ url_for('view_overview', run_id=run.log_id) }}" 
+                                               class="btn btn-sm btn-primary">
+                                                View
+                                            </a>
+                                            {% if run.critical_issues > 0 %}
+                                                <a href="{{ url_for('view_alerts', run_id=run.log_id) }}" 
+                                                   class="btn btn-sm btn-outline critical">
+                                                    Alerts
+                                                </a>
+                                            {% endif %}
+                                        </div>
+                                    </td>
+                                </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+
+            <!-- Summary Statistics -->
+            <section class="summary-section card">
+                <h2 class="section-title">
+                    <span class="section-icon">📈</span>
+                    Summary Statistics
+                </h2>
+
+                <div class="stats-grid">
+                    <div class="stat-card">
+                        <div class="stat-value">{{ runs|length }}</div>
+                        <div class="stat-label">Total Runs</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value success">{{ runs|selectattr("status", "equalto", "completed")|list|length }}</div>
+                        <div class="stat-label">Successful</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value critical">{{ runs|sum(attribute='critical_issues') }}</div>
+                        <div class="stat-label">Total Critical Issues</div>
+                    </div>
+                    <div class="stat-card">
+                        <div class="stat-value medium">{{ runs|sum(attribute='total_issues') }}</div>
+                        <div class="stat-label">Total Issues Found</div>
+                    </div>
+                </div>
+
+                {% if runs %}
+                    <div class="recent-activity">
+                        <h3>Recent Activity</h3>
+                        <div class="activity-timeline">
+                            {% for run in runs[:5] %}
+                                <div class="timeline-item">
+                                    <div class="timeline-marker {{ 'success' if run.status == 'completed' else 'error' }}"></div>
+                                    <div class="timeline-content">
+                                        <div class="timeline-title">
+                                            <a href="{{ url_for('view_overview', run_id=run.log_id) }}">
+                                                Analysis {{ run.log_id|string|truncate(8, True) }}
+                                            </a>
+                                        </div>
+                                        <div class="timeline-meta">
+                                            {{ run.run_timestamp.strftime('%B %d, %Y at %I:%M %p') if run.run_timestamp else 'Unknown time' }}
+                                            {% if run.total_issues > 0 %}
+                                                • {{ run.total_issues }} issue{{ 's' if run.total_issues != 1 else '' }} found
+                                            {% endif %}
+                                        </div>
+                                    </div>
+                                </div>
+                            {% endfor %}
+                        </div>
+                    </div>
+                {% endif %}
+            </section>
+
+        {% else %}
+            <!-- No Runs Found -->
+            <section class="no-runs-section card">
+                <div class="no-issues-content">
+                    <div class="no-issues-icon">📊</div>
+                    <h2>No Analysis Runs Found</h2>
+                    <p>You haven't run any data drift analyses yet. Upload a dataset to get started!</p>
+                    
+                    <div class="getting-started">
+                        <h3>Getting Started:</h3>
+                        <ol>
+                            <li>Configure your baseline dataset in the dashboard</li>
+                            <li>Upload a current dataset for comparison</li>
+                            <li>Review the analysis results across multiple pages</li>
+                            <li>Address any critical alerts or drift issues</li>
+                        </ol>
+                    </div>
+                    
+                    <div class="quick-actions">
+                        <a href="{{ url_for('index') }}" class="btn btn-primary">
+                            <span class="btn-icon">🚀</span>
+                            Start Your First Analysis
+                        </a>
+                    </div>
+                </div>
+            </section>
+        {% endif %}
+    </main>
+
+    <footer class="page-footer">
+        <p>© {{ current_year }} Data Drift Monitor. Track your data pipeline health.</p>
+    </footer>
+
+    <style>
+        .error-section {
+            text-align: center;
+            padding: 60px 40px;
+            border-left: 4px solid #dc3545;
+        }
+
+        .error-icon {
+            font-size: 4em;
+            margin-bottom: 20px;
+        }
+
+        .error-section h2 {
+            color: #dc3545;
+            margin-bottom: 15px;
+        }
+
+        .error-details {
+            margin: 20px 0;
+            padding: 15px;
+            background-color: #f8d7da;
+            border-radius: var(--border-radius-sm);
+            text-align: left;
+            max-width: 600px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .error-details code {
+            background-color: #f5c6cb;
+            padding: 2px 4px;
+            border-radius: 3px;
+            font-family: monospace;
+            word-break: break-all;
+        }
+
+        .troubleshooting {
+            margin: 30px 0;
+            text-align: left;
+            max-width: 500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .troubleshooting h3 {
+            color: var(--primary-color);
+            margin-bottom: 15px;
+        }
+
+        .troubleshooting ol {
+            color: #6c757d;
+            line-height: 1.6;
+        }
+
+        .error-actions {
+            margin-top: 30px;
+            display: flex;
+            gap: 15px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .runs-section {
+            margin-bottom: 30px;
+        }
+
+        .runs-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+            background: white;
+            border-radius: var(--border-radius-sm);
+            overflow: hidden;
+        }
+
+        .runs-table th,
+        .runs-table td {
+            padding: 12px 10px;
+            text-align: left;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .runs-table th {
+            background-color: #f8f9fa;
+            font-weight: 600;
+            color: var(--primary-color);
+            font-size: 0.8em;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .run-row:hover {
+            background-color: #f8f9fa;
+        }
+
+        .run-id {
+            font-family: monospace;
+        }
+
+        .run-link {
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .run-link:hover {
+            text-decoration: underline;
+        }
+
+        .run-timestamp {
+            font-family: monospace;
+            color: #6c757d;
+            font-size: 0.85em;
+        }
+
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.75em;
+            font-weight: 600;
+        }
+
+        .status-badge.success {
+            background-color: #d1e7dd;
+            color: #0f5132;
+        }
+
+        .status-badge.error {
+            background-color: #f8d7da;
+            color: #842029;
+        }
+
+        .dataset-name,
+        .baseline-name {
+            max-width: 150px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .count-badge {
+            display: inline-block;
+            padding: 4px 8px;
+            border-radius: 50%;
+            font-size: 0.8em;
+            font-weight: 700;
+            min-width: 20px;
+            text-align: center;
+        }
+
+        .count-badge.none {
+            background-color: #e9ecef;
+            color: #6c757d;
+        }
+
+        .count-badge.low {
+            background-color: #d1e7dd;
+            color: #0f5132;
+        }
+
+        .count-badge.medium {
+            background-color: #fff3cd;
+            color: #664d03;
+        }
+
+        .count-badge.high {
+            background-color: #f8d7da;
+            color: #842029;
+        }
+
+        .count-badge.critical {
+            background-color: #dc3545;
+            color: white;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 5px;
+        }
+
+        .btn-sm {
+            padding: 4px 8px;
+            font-size: 0.75em;
+        }
+
+        .btn-outline.critical {
+            border-color: #dc3545;
+            color: #dc3545;
+        }
+
+        .btn-outline.critical:hover {
+            background-color: #dc3545;
+            color: white;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-card {
+            text-align: center;
+            padding: 25px 20px;
+            background-color: #f8f9fa;
+            border-radius: var(--border-radius-sm);
+            border-left: 4px solid var(--primary-color);
+        }
+
+        .stat-value {
+            font-size: 2.5em;
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: var(--primary-color);
+        }
+
+        .stat-value.success {
+            color: #28a745;
+        }
+
+        .stat-value.critical {
+            color: #dc3545;
+        }
+
+        .stat-value.medium {
+            color: #ffc107;
+        }
+
+        .stat-label {
+            color: #6c757d;
+            font-size: 0.9em;
+            font-weight: 500;
+        }
+
+        .recent-activity h3 {
+            margin-bottom: 20px;
+            color: var(--primary-color);
+        }
+
+        .activity-timeline {
+            position: relative;
+            padding-left: 20px;
+        }
+
+        .activity-timeline::before {
+            content: '';
+            position: absolute;
+            left: 8px;
+            top: 0;
+            bottom: 0;
+            width: 2px;
+            background-color: #e9ecef;
+        }
+
+        .timeline-item {
+            position: relative;
+            margin-bottom: 20px;
+        }
+
+        .timeline-marker {
+            position: absolute;
+            left: -12px;
+            top: 4px;
+            width: 12px;
+            height: 12px;
+            border-radius: 50%;
+            border: 2px solid white;
+        }
+
+        .timeline-marker.success {
+            background-color: #28a745;
+        }
+
+        .timeline-marker.error {
+            background-color: #dc3545;
+        }
+
+        .timeline-content {
+            margin-left: 15px;
+        }
+
+        .timeline-title a {
+            color: var(--primary-color);
+            text-decoration: none;
+            font-weight: 600;
+        }
+
+        .timeline-title a:hover {
+            text-decoration: underline;
+        }
+
+        .timeline-meta {
+            color: #6c757d;
+            font-size: 0.85em;
+            margin-top: 2px;
+        }
+
+        .no-runs-section {
+            text-align: center;
+            padding: 60px 40px;
+        }
+
+        .getting-started {
+            margin: 30px 0;
+            text-align: left;
+            max-width: 500px;
+            margin-left: auto;
+            margin-right: auto;
+        }
+
+        .getting-started h3 {
+            color: var(--primary-color);
+            margin-bottom: 15px;
+        }
+
+        .getting-started ol {
+            color: #6c757d;
+            line-height: 1.6;
+        }
+
+        .quick-actions {
+            margin-top: 30px;
+        }
+
+        @media (max-width: 768px) {
+            .runs-table {
+                font-size: 0.8em;
+            }
+
+            .runs-table th,
+            .runs-table td {
+                padding: 8px 6px;
+            }
+
+            .dataset-name,
+            .baseline-name {
+                max-width: 100px;
+            }
+
+            .action-buttons {
+                flex-direction: column;
+                gap: 3px;
+            }
+
+            .stats-grid {
+                grid-template-columns: repeat(2, 1fr);
+            }
+        }
+
+        @media (max-width: 480px) {
+            .stats-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Add any interactive functionality here
+            console.log('Analysis history loaded with', {{ runs|length }}, 'runs');
+        });
+    </script>
+</body>
+</html>

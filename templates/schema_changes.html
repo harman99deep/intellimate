@@ -1,0 +1,308 @@
+<!-- schema_changes.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Schema Changes - Run {{ run_id }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="icon" href="https://aionos.io/wp-content/uploads/2024/04/cropped-file-1-32x32.png">
+</head>
+<body>
+    {% include 'analysis_nav.html' %}
+
+    <main class="container analysis-content">
+        <div class="page-header">
+            <h1 class="page-title">
+                <span class="page-icon">🔧</span>
+                Schema Changes
+            </h1>
+            <p class="page-subtitle">Column additions, removals, and structural changes in your dataset</p>
+        </div>
+
+        {% if schema_changes %}
+            <section class="analysis-section">
+                <div class="schema-changes-grid">
+                    {% for change in schema_changes %}
+                        <div class="change-card {{ change.severity.lower() }}">
+                            <div class="change-header">
+                                <div class="change-icon">
+                                    {% if change.type == 'column_added' %}🆕
+                                    {% elif change.type == 'column_removed' %}❌
+                                    {% else %}🔄{% endif %}
+                                </div>
+                                <div class="change-info">
+                                    <h3 class="change-column">{{ change.column }}</h3>
+                                    <span class="change-type">{{ change.type.replace('_', ' ').title() }}</span>
+                                </div>
+                                <span class="severity-badge {{ change.severity.lower() }}">{{ change.severity }}</span>
+                            </div>
+                            
+                            <div class="change-content">
+                                <p class="change-description">{{ change.description }}</p>
+                                
+                                {% if change.type == 'column_added' %}
+                                    <div class="change-impact positive">
+                                        <strong>Impact:</strong> New data available for analysis. 
+                                        Consider updating downstream processes to utilize this column.
+                                    </div>
+                                {% elif change.type == 'column_removed' %}
+                                    <div class="change-impact negative">
+                                        <strong>Impact:</strong> Data no longer available. 
+                                        Check dependent processes and reports that may use this column.
+                                    </div>
+                                {% endif %}
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+            </section>
+
+            <!-- Schema Summary -->
+            <section class="analysis-section card schema-summary">
+                <h2 class="section-title">
+                    <span class="section-icon">📋</span>
+                    Schema Change Summary
+                </h2>
+                
+                <div class="summary-stats">
+                    <div class="stats-grid">
+                        <div class="stat-item">
+                            <div class="stat-value">{{ schema_changes|length }}</div>
+                            <div class="stat-label">Total Changes</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value added">{{ schema_changes|selectattr("type", "equalto", "column_added")|list|length }}</div>
+                            <div class="stat-label">Columns Added</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value removed">{{ schema_changes|selectattr("type", "equalto", "column_removed")|list|length }}</div>
+                            <div class="stat-label">Columns Removed</div>
+                        </div>
+                        <div class="stat-item">
+                            <div class="stat-value critical">{{ schema_changes|selectattr("severity", "equalto", "Critical")|list|length }}</div>
+                            <div class="stat-label">Critical Changes</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="recommendations">
+                    <h3>Schema Change Recommendations</h3>
+                    <ul class="recommendation-list">
+                        {% if schema_changes|selectattr("severity", "equalto", "Critical")|list|length > 0 %}
+                            <li class="recommendation critical">
+                                <strong>Critical Changes Detected:</strong> Review removed columns and update dependent systems immediately.
+                            </li>
+                        {% endif %}
+                        {% if schema_changes|selectattr("type", "equalto", "column_added")|list %}
+                            <li class="recommendation">
+                                Document new columns and update data dictionary and downstream applications.
+                            </li>
+                        {% endif %}
+                        {% if schema_changes|selectattr("type", "equalto", "column_removed")|list %}
+                            <li class="recommendation">
+                                Verify removal was intentional and update all dependent processes and reports.
+                            </li>
+                        {% endif %}
+                        <li class="recommendation">
+                            Update baseline schema definition to reflect accepted changes.
+                        </li>
+                    </ul>
+                </div>
+            </section>
+
+        {% else %}
+            <!-- No Schema Changes -->
+            <section class="analysis-section card no-issues">
+                <div class="no-issues-content">
+                    <div class="no-issues-icon">✅</div>
+                    <h2>No Schema Changes Detected</h2>
+                    <p>Your dataset schema is consistent with the baseline. 
+                       All expected columns are present with no structural changes.</p>
+                    
+                    <div class="schema-stats">
+                        <div class="stats-comparison">
+                            <div class="schema-info">
+                                <h4>Current Schema</h4>
+                                <div class="column-count">{{ results.overview.current_dataset.columns if results.overview and results.overview.current_dataset else 'N/A' }} columns</div>
+                            </div>
+                            <div class="vs-divider">=</div>
+                            <div class="schema-info">
+                                <h4>Baseline Schema</h4>
+                                <div class="column-count">{{ results.overview.baseline_dataset.columns if results.overview and results.overview.baseline_dataset else 'N/A' }} columns</div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        {% endif %}
+
+        <!-- Navigation Actions -->
+        <div class="page-actions">
+            <a href="{{ url_for('view_volume_anomalies', run_id=run_id) }}" class="btn btn-outline">
+                <span class="btn-icon">📦</span>
+                Volume Anomalies
+            </a>
+            <a href="{{ url_for('view_alerts', run_id=run_id) }}" class="btn btn-primary">
+                <span class="btn-icon">🚨</span>
+                Alerts
+            </a>
+        </div>
+    </main>
+
+    <style>
+        .schema-changes-grid {
+            display: grid;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .change-card {
+            background: white;
+            border-radius: var(--border-radius-md);
+            box-shadow: var(--card-shadow);
+            overflow: hidden;
+            border-left: 4px solid #e9ecef;
+        }
+
+        .change-card.critical {
+            border-left-color: #dc3545;
+        }
+
+        .change-card.medium {
+            border-left-color: #ffc107;
+        }
+
+        .change-header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 20px;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .change-icon {
+            font-size: 2em;
+            flex-shrink: 0;
+        }
+
+        .change-info {
+            flex-grow: 1;
+        }
+
+        .change-column {
+            margin: 0;
+            font-size: 1.2em;
+            color: var(--primary-color);
+            font-family: monospace;
+        }
+
+        .change-type {
+            font-size: 0.9em;
+            color: #6c757d;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .change-content {
+            padding: 20px;
+        }
+
+        .change-description {
+            margin: 0 0 15px 0;
+            color: #495057;
+        }
+
+        .change-impact {
+            padding: 10px 15px;
+            border-radius: var(--border-radius-sm);
+            border-left: 4px solid;
+        }
+
+        .change-impact.positive {
+            background-color: #d1e7dd;
+            border-left-color: #28a745;
+            color: #0f5132;
+        }
+
+        .change-impact.negative {
+            background-color: #f8d7da;
+            border-left-color: #dc3545;
+            color: #721c24;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stat-item {
+            text-align: center;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: var(--border-radius-sm);
+        }
+
+        .stat-value {
+            font-size: 2em;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .stat-value.added {
+            color: #28a745;
+        }
+
+        .stat-value.removed {
+            color: #dc3545;
+        }
+
+        .stat-value.critical {
+            color: #dc3545;
+        }
+
+        .stat-label {
+            color: #6c757d;
+            font-size: 0.9em;
+        }
+
+        .schema-stats {
+            margin: 30px 0;
+        }
+
+        .stats-comparison {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 30px;
+        }
+
+        .schema-info {
+            text-align: center;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: var(--border-radius-sm);
+            min-width: 150px;
+        }
+
+        .schema-info h4 {
+            margin: 0 0 10px 0;
+            color: var(--primary-color);
+        }
+
+        .column-count {
+            font-size: 1.5em;
+            font-weight: 700;
+            color: #28a745;
+        }
+
+        .vs-divider {
+            font-size: 2em;
+            font-weight: 700;
+            color: #28a745;
+        }
+    </style>
+</body>
+</html>

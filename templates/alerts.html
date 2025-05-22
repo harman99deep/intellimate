@@ -1,0 +1,625 @@
+<!-- alerts.html -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Critical Alerts - Run {{ run_id }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="icon" href="https://aionos.io/wp-content/uploads/2024/04/cropped-file-1-32x32.png">
+</head>
+<body>
+    {% include 'analysis_nav.html' %}
+
+    <main class="container analysis-content">
+        <div class="page-header">
+            <h1 class="page-title">
+                <span class="page-icon">🚨</span>
+                Critical Alerts
+            </h1>
+            <p class="page-subtitle">High-priority issues requiring immediate attention</p>
+        </div>
+
+        {% if alerts %}
+            <!-- Critical Alerts Section -->
+            <section class="analysis-section">
+                <div class="alerts-container">
+                    {% for alert in alerts %}
+                        <div class="alert-card {{ alert.severity.lower() }}">
+                            <div class="alert-header">
+                                <div class="alert-indicator {{ alert.severity.lower() }}">
+                                    <span class="alert-icon">
+                                        {% if alert.severity == 'Critical' %}🔴
+                                        {% else %}⚠️{% endif %}
+                                    </span>
+                                </div>
+                                <div class="alert-info">
+                                    <h3 class="alert-title">{{ alert.title }}</h3>
+                                    <div class="alert-meta">
+                                        <span class="alert-type">{{ alert.type }}</span>
+                                        <span class="alert-id">{{ alert.id }}</span>
+                                    </div>
+                                </div>
+                                <div class="alert-status {{ alert.status }}">
+                                    {{ alert.status.title() }}
+                                </div>
+                            </div>
+                            
+                            <div class="alert-content">
+                                <p class="alert-description">{{ alert.description }}</p>
+                                
+                                {% if alert.column %}
+                                    <div class="alert-details">
+                                        <strong>Affected Column:</strong> 
+                                        <code class="column-name">{{ alert.column }}</code>
+                                    </div>
+                                {% endif %}
+                                
+                                {% if alert.drift_score %}
+                                    <div class="alert-severity-indicator">
+                                        <span class="severity-label">Drift Severity:</span>
+                                        <div class="severity-bar">
+                                            <div class="severity-fill {{ alert.severity.lower() }}" 
+                                                 style="width: {{ (alert.drift_score * 100)|min(100) }}%">
+                                        </div>
+                                        <span class="severity-value">{{ "%.3f"|format(alert.drift_score) }}</span>
+                                    </div>
+                                {% endif %}
+                                
+                                <div class="alert-timestamp">
+                                    <span class="timestamp-label">Detected:</span>
+                                    <span class="timestamp-value">{{ alert.timestamp[:19] if alert.timestamp else 'N/A' }}</span>
+                                </div>
+                            </div>
+                            
+                            <div class="alert-actions">
+                                <button class="btn btn-sm btn-outline" onclick="acknowledgeAlert('{{ alert.id }}')">
+                                    Acknowledge
+                                </button>
+                                <button class="btn btn-sm btn-secondary" onclick="viewDetails('{{ alert.id }}')">
+                                    View Details
+                                </button>
+                            </div>
+                        </div>
+                    {% endfor %}
+                </div>
+            </section>
+
+            <!-- Alert Summary -->
+            <section class="analysis-section card alert-summary">
+                <h2 class="section-title">
+                    <span class="section-icon">📊</span>
+                    Alert Summary
+                </h2>
+                
+                <div class="alert-stats">
+                    <div class="stats-row">
+                        <div class="stat-group">
+                            <div class="stat-value critical">{{ alerts|selectattr("severity", "equalto", "Critical")|list|length }}</div>
+                            <div class="stat-label">Critical Alerts</div>
+                        </div>
+                        <div class="stat-group">
+                            <div class="stat-value medium">{{ alerts|selectattr("severity", "equalto", "Medium")|list|length }}</div>
+                            <div class="stat-label">Medium Alerts</div>
+                        </div>
+                        <div class="stat-group">
+                            <div class="stat-value active">{{ alerts|selectattr("status", "equalto", "active")|list|length }}</div>
+                            <div class="stat-label">Active Alerts</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="alert-breakdown">
+                    <h3>Alert Breakdown by Type</h3>
+                    <div class="breakdown-grid">
+                        {% set alert_types = alerts|groupby('type') %}
+                        {% for type, type_alerts in alert_types %}
+                            <div class="breakdown-item">
+                                <div class="breakdown-icon">
+                                    {% if 'Statistical' in type %}📈
+                                    {% elif 'Distribution' in type %}📉
+                                    {% elif 'Volume' in type %}📦
+                                    {% elif 'Schema' in type %}🔧
+                                    {% else %}⚠️{% endif %}
+                                </div>
+                                <div class="breakdown-info">
+                                    <div class="breakdown-type">{{ type }}</div>
+                                    <div class="breakdown-count">{{ type_alerts|list|length }} alert{{ 's' if type_alerts|list|length != 1 else '' }}</div>
+                                </div>
+                            </div>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                <div class="priority-actions">
+                    <h3>Priority Actions Required</h3>
+                    <div class="action-items">
+                        {% set critical_alerts = alerts|selectattr("severity", "equalto", "Critical")|list %}
+                        {% if critical_alerts %}
+                            <div class="action-item critical">
+                                <span class="action-icon">🔥</span>
+                                <div class="action-content">
+                                    <strong>Immediate Investigation Required:</strong>
+                                    {{ critical_alerts|length }} critical alert{{ 's' if critical_alerts|length != 1 else '' }} detected. 
+                                    Review data pipeline integrity and investigate root causes immediately.
+                                </div>
+                            </div>
+                        {% endif %}
+                        
+                        {% set drift_alerts = alerts|selectattr("type", "match", ".*Drift.*")|list %}
+                        {% if drift_alerts %}
+                            <div class="action-item">
+                                <span class="action-icon">📈</span>
+                                <div class="action-content">
+                                    <strong>Data Drift Detected:</strong>
+                                    Monitor data quality and consider updating baseline if drift is expected.
+                                </div>
+                            </div>
+                        {% endif %}
+                        
+                        {% set volume_alerts = alerts|selectattr("type", "equalto", "Volume Anomaly")|list %}
+                        {% if volume_alerts %}
+                            <div class="action-item">
+                                <span class="action-icon">📦</span>
+                                <div class="action-content">
+                                    <strong>Volume Changes:</strong>
+                                    Verify data sources and ingestion processes for completeness.
+                                </div>
+                            </div>
+                        {% endif %}
+                        
+                        {% set schema_alerts = alerts|selectattr("type", "equalto", "Schema Change")|list %}
+                        {% if schema_alerts %}
+                            <div class="action-item">
+                                <span class="action-icon">🔧</span>
+                                <div class="action-content">
+                                    <strong>Schema Changes:</strong>
+                                    Update downstream processes and documentation to reflect schema modifications.
+                                </div>
+                            </div>
+                        {% endif %}
+                    </div>
+                </div>
+            </section>
+
+        {% else %}
+            <!-- No Alerts -->
+            <section class="analysis-section card no-issues">
+                <div class="no-issues-content">
+                    <div class="no-issues-icon">✅</div>
+                    <h2>No Critical Alerts</h2>
+                    <p>Great news! No critical issues were detected in your current dataset. 
+                       Your data pipeline appears to be operating within normal parameters.</p>
+                    
+                    <div class="system-status">
+                        <h3>System Health Status</h3>
+                        <div class="status-indicators">
+                            <div class="status-item healthy">
+                                <span class="status-icon">✅</span>
+                                <span class="status-label">Data Integrity</span>
+                                <span class="status-value">Healthy</span>
+                            </div>
+                            <div class="status-item healthy">
+                                <span class="status-icon">✅</span>
+                                <span class="status-label">Volume Consistency</span>
+                                <span class="status-value">Normal</span>
+                            </div>
+                            <div class="status-item healthy">
+                                <span class="status-icon">✅</span>
+                                <span class="status-label">Schema Stability</span>
+                                <span class="status-value">Stable</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div class="monitoring-recommendations">
+                        <h4>Monitoring Recommendations:</h4>
+                        <ul>
+                            <li>Continue regular monitoring with your current baseline</li>
+                            <li>Set up automated drift detection for continuous monitoring</li>
+                            <li>Review and update thresholds based on business requirements</li>
+                            <li>Document this successful analysis as a quality baseline</li>
+                        </ul>
+                    </div>
+                </div>
+            </section>
+        {% endif %}
+
+        <!-- Navigation Actions -->
+        <div class="page-actions">
+            <a href="{{ url_for('view_overview', run_id=run_id) }}" class="btn btn-outline">
+                <span class="btn-icon">📊</span>
+                Back to Overview
+            </a>
+            <a href="{{ url_for('index') }}" class="btn btn-primary">
+                <span class="btn-icon">🔍</span>
+                New Analysis
+            </a>
+        </div>
+    </main>
+
+    <style>
+        .alerts-container {
+            display: grid;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .alert-card {
+            background: white;
+            border-radius: var(--border-radius-md);
+            box-shadow: var(--card-shadow);
+            border-left: 4px solid;
+            overflow: hidden;
+        }
+
+        .alert-card.critical {
+            border-left-color: #dc3545;
+            box-shadow: 0 4px 20px rgba(220, 53, 69, 0.15);
+        }
+
+        .alert-card.medium {
+            border-left-color: #ffc107;
+        }
+
+        .alert-header {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-bottom: 1px solid #e9ecef;
+        }
+
+        .alert-indicator {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 40px;
+            height: 40px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .alert-indicator.critical {
+            background-color: rgba(220, 53, 69, 0.1);
+        }
+
+        .alert-icon {
+            font-size: 1.5em;
+        }
+
+        .alert-info {
+            flex-grow: 1;
+        }
+
+        .alert-title {
+            margin: 0 0 5px 0;
+            font-size: 1.1em;
+            color: var(--primary-color);
+        }
+
+        .alert-meta {
+            display: flex;
+            gap: 15px;
+            font-size: 0.9em;
+            color: #6c757d;
+        }
+
+        .alert-type {
+            font-weight: 500;
+        }
+
+        .alert-id {
+            font-family: monospace;
+            background-color: #e9ecef;
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+
+        .alert-status {
+            padding: 6px 12px;
+            border-radius: 15px;
+            font-size: 0.8em;
+            font-weight: 600;
+            text-transform: uppercase;
+        }
+
+        .alert-status.active {
+            background-color: #dc3545;
+            color: white;
+        }
+
+        .alert-content {
+            padding: 20px;
+        }
+
+        .alert-description {
+            margin: 0 0 15px 0;
+            color: #495057;
+            line-height: 1.5;
+        }
+
+        .alert-details {
+            margin-bottom: 15px;
+            padding: 10px;
+            background-color: #f8f9fa;
+            border-radius: var(--border-radius-sm);
+        }
+
+        .column-name {
+            background-color: #e9ecef;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-family: monospace;
+        }
+
+        .alert-severity-indicator {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .severity-label {
+            font-weight: 500;
+            color: #6c757d;
+        }
+
+        .severity-bar {
+            flex-grow: 1;
+            height: 8px;
+            background-color: #e9ecef;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+
+        .severity-fill {
+            height: 100%;
+            transition: width 0.3s ease;
+        }
+
+        .severity-fill.critical {
+            background-color: #dc3545;
+        }
+
+        .severity-value {
+            font-family: monospace;
+            font-size: 0.9em;
+            color: #6c757d;
+        }
+
+        .alert-timestamp {
+            display: flex;
+            gap: 10px;
+            font-size: 0.9em;
+            color: #6c757d;
+        }
+
+        .timestamp-label {
+            font-weight: 500;
+        }
+
+        .timestamp-value {
+            font-family: monospace;
+        }
+
+        .alert-actions {
+            padding: 15px 20px;
+            background-color: #f8f9fa;
+            border-top: 1px solid #e9ecef;
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 0.9em;
+        }
+
+        .alert-summary {
+            margin-top: 30px;
+        }
+
+        .alert-stats {
+            margin-bottom: 30px;
+        }
+
+        .stats-row {
+            display: flex;
+            justify-content: space-around;
+            gap: 20px;
+        }
+
+        .stat-group {
+            text-align: center;
+            padding: 20px;
+            background-color: #f8f9fa;
+            border-radius: var(--border-radius-sm);
+            flex: 1;
+        }
+
+        .stat-value.critical {
+            color: #dc3545;
+            font-size: 2em;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .stat-value.medium {
+            color: #ffc107;
+            font-size: 2em;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .stat-value.active {
+            color: var(--primary-color);
+            font-size: 2em;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
+        .alert-breakdown h3,
+        .priority-actions h3 {
+            margin-bottom: 15px;
+            color: var(--primary-color);
+        }
+
+        .breakdown-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+            gap: 15px;
+            margin-bottom: 30px;
+        }
+
+        .breakdown-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: var(--border-radius-sm);
+        }
+
+        .breakdown-icon {
+            font-size: 1.5em;
+        }
+
+        .breakdown-type {
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+
+        .breakdown-count {
+            font-size: 0.9em;
+            color: #6c757d;
+        }
+
+        .action-items {
+            display: grid;
+            gap: 15px;
+        }
+
+        .action-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 15px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: var(--border-radius-sm);
+            border-left: 4px solid #007bff;
+        }
+
+        .action-item.critical {
+            background-color: #f8d7da;
+            border-left-color: #dc3545;
+        }
+
+        .action-icon {
+            font-size: 1.2em;
+            flex-shrink: 0;
+        }
+
+        .action-content {
+            flex-grow: 1;
+        }
+
+        .system-status {
+            margin: 30px 0;
+        }
+
+        .system-status h3 {
+            color: var(--primary-color);
+            margin-bottom: 15px;
+            text-align: center;
+        }
+
+        .status-indicators {
+            display: grid;
+            gap: 10px;
+            max-width: 400px;
+            margin: 0 auto;
+        }
+
+        .status-item {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            padding: 10px 15px;
+            background-color: #f8f9fa;
+            border-radius: var(--border-radius-sm);
+        }
+
+        .status-item.healthy {
+            border-left: 4px solid #28a745;
+        }
+
+        .status-label {
+            flex-grow: 1;
+            font-weight: 500;
+        }
+
+        .status-value {
+            color: #28a745;
+            font-weight: 600;
+        }
+
+        .monitoring-recommendations {
+            margin-top: 20px;
+            text-align: left;
+        }
+
+        .monitoring-recommendations h4 {
+            color: var(--primary-color);
+            margin-bottom: 10px;
+        }
+
+        .monitoring-recommendations ul {
+            color: #6c757d;
+        }
+
+        @media (max-width: 768px) {
+            .alert-header {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }
+
+            .stats-row {
+                flex-direction: column;
+            }
+
+            .breakdown-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+
+    <script>
+        function acknowledgeAlert(alertId) {
+            // In a real implementation, this would make an API call
+            console.log('Acknowledging alert:', alertId);
+            alert('Alert ' + alertId + ' acknowledged. This would typically update the alert status.');
+        }
+
+        function viewDetails(alertId) {
+            // In a real implementation, this would navigate to detailed view
+            console.log('Viewing details for alert:', alertId);
+            alert('This would show detailed information for alert ' + alertId);
+        }
+
+        document.addEventListener('DOMContentLoaded', function() {
+            // Animate severity bars
+            const severityFills = document.querySelectorAll('.severity-fill');
+            severityFills.forEach(fill => {
+                const width = fill.style.width;
+                fill.style.width = '0%';
+                setTimeout(() => {
+                    fill.style.width = width;
+                }, 100);
+            });
+        });
+    </script>
+</body>
+</html>

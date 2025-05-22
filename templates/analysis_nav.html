@@ -1,0 +1,177 @@
+<!-- analysis_nav.html - Shared navigation component for analysis pages -->
+<header class="main-nav-container">
+    <nav class="main-nav">
+        <a href="{{ url_for('index') }}" class="nav-brand">
+            <span class="nav-icon">🛡️</span>
+            Data Drift Monitor
+        </a>
+        <div class="nav-links">
+            <a href="{{ url_for('index') }}" class="nav-link">Dashboard</a>
+            <a href="{{ url_for('list_runs') }}" class="nav-link">History</a>
+        </div>
+    </nav>
+</header>
+
+<!-- Analysis-specific navigation tabs -->
+<nav class="analysis-nav">
+    <div class="container">
+        <div class="analysis-nav-content">
+            <div class="analysis-info">
+                <h1 class="analysis-title">Analysis Results</h1>
+                <div class="run-info">
+                    <span class="run-id">Run ID: {{ run_id }}</span>
+                    <span class="run-timestamp">{{ results.timestamp[:19] if results.timestamp else 'N/A' }}</span>
+                </div>
+            </div>
+            <div class="analysis-tabs">
+                <a href="{{ url_for('view_overview', run_id=run_id) }}" 
+                   class="tab-link {{ 'active' if current_tab == 'overview' else '' }}">
+                    <span class="tab-icon">📊</span>
+                    Overview
+                </a>
+                <a href="{{ url_for('view_data_drift', run_id=run_id) }}" 
+                   class="tab-link {{ 'active' if current_tab == 'data-drift' else '' }}">
+                    <span class="tab-icon">📈</span>
+                    Data Drift
+                    {% if results.summary.statistical_drift_count > 0 or results.summary.distribution_drift_count > 0 %}
+                        <span class="tab-badge">{{ results.summary.statistical_drift_count + results.summary.distribution_drift_count }}</span>
+                    {% endif %}
+                </a>
+                <a href="{{ url_for('view_volume_anomalies', run_id=run_id) }}" 
+                   class="tab-link {{ 'active' if current_tab == 'volume-anomalies' else '' }}">
+                    <span class="tab-icon">📦</span>
+                    Volume Anomalies
+                    {% if results.summary.volume_anomaly_count > 0 %}
+                        <span class="tab-badge">{{ results.summary.volume_anomaly_count }}</span>
+                    {% endif %}
+                </a>
+                <a href="{{ url_for('view_schema_changes', run_id=run_id) }}" 
+                   class="tab-link {{ 'active' if current_tab == 'schema-changes' else '' }}">
+                    <span class="tab-icon">🔧</span>
+                    Schema Changes
+                    {% if results.summary.schema_change_count > 0 %}
+                        <span class="tab-badge">{{ results.summary.schema_change_count }}</span>
+                    {% endif %}
+                </a>
+                <a href="{{ url_for('view_alerts', run_id=run_id) }}" 
+                   class="tab-link {{ 'active' if current_tab == 'alerts' else '' }}">
+                    <span class="tab-icon">🚨</span>
+                    Alerts
+                    {% if results.summary.critical_issues > 0 %}
+                        <span class="tab-badge critical">{{ results.summary.critical_issues }}</span>
+                    {% endif %}
+                </a>
+            </div>
+        </div>
+    </div>
+</nav>
+
+<style>
+    .analysis-nav {
+        background-color: white;
+        border-bottom: 1px solid var(--border-color);
+        padding: 20px 0;
+        margin-bottom: 30px;
+    }
+
+    .analysis-nav-content {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 20px;
+    }
+
+    .analysis-info h1 {
+        margin: 0 0 5px 0;
+        font-size: 1.5em;
+        color: var(--heading-color);
+    }
+
+    .run-info {
+        display: flex;
+        gap: 20px;
+        font-size: 0.9em;
+        color: #6c757d;
+    }
+
+    .run-id {
+        font-family: monospace;
+        background-color: #f8f9fa;
+        padding: 2px 6px;
+        border-radius: 3px;
+    }
+
+    .analysis-tabs {
+        display: flex;
+        gap: 5px;
+        flex-wrap: wrap;
+    }
+
+    .tab-link {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        padding: 10px 16px;
+        text-decoration: none;
+        color: #6c757d;
+        border-radius: var(--border-radius-sm);
+        transition: all 0.2s ease;
+        position: relative;
+        white-space: nowrap;
+    }
+
+    .tab-link:hover {
+        background-color: #f8f9fa;
+        color: var(--primary-color);
+    }
+
+    .tab-link.active {
+        background-color: var(--primary-color);
+        color: white;
+    }
+
+    .tab-badge {
+        background-color: #dc3545;
+        color: white;
+        font-size: 0.7em;
+        padding: 2px 6px;
+        border-radius: 10px;
+        min-width: 18px;
+        text-align: center;
+        margin-left: 4px;
+    }
+
+    .tab-badge.critical {
+        background-color: #dc3545;
+        animation: pulse 2s infinite;
+    }
+
+    .tab-link.active .tab-badge {
+        background-color: rgba(255, 255, 255, 0.3);
+        color: white;
+    }
+
+    @keyframes pulse {
+        0% { opacity: 1; }
+        50% { opacity: 0.7; }
+        100% { opacity: 1; }
+    }
+
+    @media (max-width: 768px) {
+        .analysis-nav-content {
+            flex-direction: column;
+            align-items: stretch;
+        }
+
+        .analysis-tabs {
+            overflow-x: auto;
+            padding-bottom: 5px;
+            justify-content: flex-start;
+        }
+
+        .tab-link {
+            flex-shrink: 0;
+        }
+    }
+</style>
