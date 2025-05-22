@@ -1,4 +1,4 @@
-# analysis_engine.py - Refactored for Data Drift Detection
+# analysis_engine.py - Restored with PostgreSQL Historical Data Functionality
 
 import pandas as pd
 import numpy as np
@@ -42,12 +42,7 @@ DRIFT_THRESHOLD = 0.15  # 15% change threshold for drift detection
 VOLUME_THRESHOLD = 0.10  # 10% change threshold for volume anomalies
 SIGNIFICANCE_LEVEL = 0.05
 MAX_ROWS_FOR_PREVIEW = 10
-
-# --- Drift Types ---
-DRIFT_TYPE_STATISTICAL = "statistical_drift"
-DRIFT_TYPE_DISTRIBUTION = "distribution_drift"
-DRIFT_TYPE_VOLUME = "volume_drift"
-DRIFT_TYPE_SCHEMA = "schema_drift"
+HISTORIC_SAMPLE_ROWS_FOR_CONTEXT = 50
 
 warnings.filterwarnings('ignore')
 
@@ -83,412 +78,6 @@ def _sanitize_for_json(item):
         return [_sanitize_for_json(i) for i in item]
     return _to_native_py_type(item)
 
-class DataDriftAnalyzer:
-    """Main class for detecting data drift between baseline and current datasets"""
-    
-    def __init__(self, drift_threshold=DRIFT_THRESHOLD, volume_threshold=VOLUME_THRESHOLD, 
-                 significance_level=SIGNIFICANCE_LEVEL):
-        self.drift_threshold = drift_threshold
-        self.volume_threshold = volume_threshold
-        self.significance_level = significance_level
-        
-    def analyze_datasets(self, current_df, baseline_stats, baseline_total_rows, 
-                        current_filename, baseline_filename):
-        """
-        Perform comprehensive data drift analysis
-        
-        Args:
-            current_df: Current dataset to analyze
-            baseline_stats: Statistical summary of baseline dataset
-            baseline_total_rows: Total rows in baseline dataset
-            current_filename: Name of current dataset file
-            baseline_filename: Name of baseline dataset source
-            
-        Returns:
-            Dictionary containing analysis results organized by sections
-        """
-        run_id = f"RUN_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        timestamp = datetime.now(timezone.utc).isoformat()
-        
-        # Calculate current dataset statistics
-        current_stats = self._calculate_dataset_stats(current_df)
-        current_total_rows = len(current_df)
-        
-        # Detect different types of drift
-        statistical_drifts = self._detect_statistical_drift(current_stats, baseline_stats)
-        distribution_drifts = self._detect_distribution_drift(current_df, baseline_stats)
-        volume_anomalies = self._detect_volume_anomalies(
-            current_total_rows, baseline_total_rows, 
-            len(current_df.columns), len(baseline_stats.keys()) if baseline_stats else 0
-        )
-        schema_changes = self._detect_schema_changes(
-            list(current_df.columns), list(baseline_stats.keys()) if baseline_stats else []
-        )
-        
-        # Generate alerts for critical issues
-        alerts = self._generate_alerts(statistical_drifts, distribution_drifts, 
-                                     volume_anomalies, schema_changes)
-        
-        # Create summary
-        summary = self._create_summary(statistical_drifts, distribution_drifts, 
-                                     volume_anomalies, schema_changes)
-        
-        return {
-            'run_id': run_id,
-            'timestamp': timestamp,
-            'status': 'completed',
-            'current_filename': current_filename,
-            'baseline_filename': baseline_filename,
-            'summary': summary,
-            'overview': {
-                'current_dataset': {
-                    'filename': current_filename,
-                    'rows': current_total_rows,
-                    'columns': len(current_df.columns)
-                },
-                'baseline_dataset': {
-                    'filename': baseline_filename,
-                    'rows': baseline_total_rows,
-                    'columns': len(baseline_stats.keys()) if baseline_stats else 0
-                },
-                'drift_summary': summary
-            },
-            'data_drift': {
-                'statistical_drifts': statistical_drifts,
-                'distribution_drifts': distribution_drifts
-            },
-            'volume_anomalies': volume_anomalies,
-            'schema_changes': schema_changes,
-            'alerts': alerts
-        }
-    
-    def _calculate_dataset_stats(self, df):
-        """Calculate statistical summary for a dataset"""
-        stats = {}
-        
-        for column in df.columns:
-            col_stats = {
-                'column': column,
-                'dtype': str(df[column].dtype),
-                'null_count': int(df[column].isnull().sum()),
-                'total_count': len(df[column]),
-                'null_percentage': float(df[column].isnull().sum() / len(df[column]) * 100)
-            }
-            
-            if pd.api.types.is_numeric_dtype(df[column]):
-                non_null_data = df[column].dropna()
-                if len(non_null_data) > 0:
-                    col_stats.update({
-                        'mean': float(non_null_data.mean()),
-                        'std': float(non_null_data.std()),
-                        'min': float(non_null_data.min()),
-                        'max': float(non_null_data.max()),
-                        'median': float(non_null_data.median()),
-                        'q25': float(non_null_data.quantile(0.25)),
-                        'q75': float(non_null_data.quantile(0.75))
-                    })
-            else:
-                non_null_data = df[column].dropna()
-                if len(non_null_data) > 0:
-                    col_stats.update({
-                        'unique_count': int(non_null_data.nunique()),
-                        'most_frequent': str(non_null_data.mode().iloc[0]) if len(non_null_data.mode()) > 0 else None,
-                        'most_frequent_count': int(non_null_data.value_counts().iloc[0]) if len(non_null_data.value_counts()) > 0 else 0
-                    })
-            
-            stats[column] = col_stats
-        
-        return stats
-    
-    def _detect_statistical_drift(self, current_stats, baseline_stats):
-        """Detect statistical drift in numerical columns"""
-        drifts = []
-        
-        for column, current_col_stats in current_stats.items():
-            if column not in baseline_stats:
-                continue
-                
-            baseline_col_stats = baseline_stats[column]
-            
-            # Only analyze numerical columns for statistical drift
-            if 'mean' in current_col_stats and 'mean' in baseline_col_stats:
-                # Mean drift
-                current_mean = current_col_stats['mean']
-                baseline_mean = baseline_col_stats['mean']
-                
-                if baseline_mean != 0:
-                    mean_change = abs((current_mean - baseline_mean) / baseline_mean)
-                    if mean_change > self.drift_threshold:
-                        severity = self._get_severity(mean_change)
-                        drifts.append({
-                            'type': 'mean_drift',
-                            'column': column,
-                            'severity': severity,
-                            'description': f'Mean shifted from {baseline_mean:.2f} to {current_mean:.2f} ({mean_change*100:.1f}% change)',
-                            'baseline_value': baseline_mean,
-                            'current_value': current_mean,
-                            'change_percentage': mean_change * 100,
-                            'drift_score': mean_change
-                        })
-                
-                # Standard deviation drift
-                current_std = current_col_stats.get('std', 0)
-                baseline_std = baseline_col_stats.get('std', 0)
-                
-                if baseline_std != 0:
-                    std_change = abs((current_std - baseline_std) / baseline_std)
-                    if std_change > self.drift_threshold:
-                        severity = self._get_severity(std_change)
-                        drifts.append({
-                            'type': 'variance_drift',
-                            'column': column,
-                            'severity': severity,
-                            'description': f'Standard deviation changed from {baseline_std:.2f} to {current_std:.2f} ({std_change*100:.1f}% change)',
-                            'baseline_value': baseline_std,
-                            'current_value': current_std,
-                            'change_percentage': std_change * 100,
-                            'drift_score': std_change
-                        })
-                
-                # Range drift
-                current_range = current_col_stats['max'] - current_col_stats['min']
-                baseline_range = baseline_col_stats['max'] - baseline_col_stats['min']
-                
-                if baseline_range != 0:
-                    range_change = abs((current_range - baseline_range) / baseline_range)
-                    if range_change > self.drift_threshold:
-                        severity = self._get_severity(range_change)
-                        drifts.append({
-                            'type': 'range_drift',
-                            'column': column,
-                            'severity': severity,
-                            'description': f'Value range changed from {baseline_range:.2f} to {current_range:.2f} ({range_change*100:.1f}% change)',
-                            'baseline_value': baseline_range,
-                            'current_value': current_range,
-                            'change_percentage': range_change * 100,
-                            'drift_score': range_change
-                        })
-        
-        return drifts
-    
-    def _detect_distribution_drift(self, current_df, baseline_stats):
-        """Detect distribution drift using statistical tests"""
-        drifts = []
-        
-        for column in current_df.columns:
-            if column not in baseline_stats:
-                continue
-                
-            baseline_col_stats = baseline_stats[column]
-            
-            # Only test numerical columns with sufficient data
-            if pd.api.types.is_numeric_dtype(current_df[column]) and 'mean' in baseline_col_stats:
-                current_data = current_df[column].dropna()
-                
-                if len(current_data) < 10:  # Need minimum sample size
-                    continue
-                
-                # Generate synthetic baseline data for comparison
-                # In a real implementation, you'd store actual baseline data
-                baseline_mean = baseline_col_stats['mean']
-                baseline_std = baseline_col_stats.get('std', 1)
-                
-                if baseline_std > 0:
-                    # Create synthetic baseline sample
-                    np.random.seed(42)  # For reproducible results
-                    synthetic_baseline = np.random.normal(
-                        baseline_mean, baseline_std, len(current_data)
-                    )
-                    
-                    # Kolmogorov-Smirnov test
-                    ks_stat, p_value = ks_2samp(synthetic_baseline, current_data)
-                    
-                    if p_value < self.significance_level:
-                        severity = self._get_severity(ks_stat)
-                        drifts.append({
-                            'type': 'distribution_drift',
-                            'column': column,
-                            'severity': severity,
-                            'description': f'Distribution significantly different (KS statistic: {ks_stat:.3f}, p-value: {p_value:.4f})',
-                            'test_statistic': ks_stat,
-                            'p_value': p_value,
-                            'drift_score': ks_stat
-                        })
-        
-        return drifts
-    
-    def _detect_volume_anomalies(self, current_rows, baseline_rows, current_cols, baseline_cols):
-        """Detect volume-based anomalies"""
-        anomalies = []
-        
-        # Row count anomaly
-        if baseline_rows and baseline_rows > 0:
-            row_change = abs(current_rows - baseline_rows) / baseline_rows
-            if row_change > self.volume_threshold:
-                severity = self._get_severity(row_change)
-                direction = "increase" if current_rows > baseline_rows else "decrease"
-                
-                anomalies.append({
-                    'type': 'row_count_anomaly',
-                    'metric': 'Row Count',
-                    'severity': severity,
-                    'description': f'Expected ~{baseline_rows:,} rows, received {current_rows:,} rows ({row_change*100:.1f}% {direction})',
-                    'baseline_value': baseline_rows,
-                    'current_value': current_rows,
-                    'change_percentage': row_change * 100,
-                    'direction': direction,
-                    'chart_width': min(((current_rows / baseline_rows) * 50), 100) if baseline_rows > 0 else 50
-                })
-        
-        # Column count anomaly
-        if baseline_cols != current_cols:
-            col_change = abs(current_cols - baseline_cols) / baseline_cols if baseline_cols > 0 else 1
-            severity = self._get_severity(col_change)
-            direction = "increase" if current_cols > baseline_cols else "decrease"
-            
-            anomalies.append({
-                'type': 'column_count_anomaly',
-                'metric': 'Column Count',
-                'severity': severity,
-                'description': f'Expected {baseline_cols} columns, found {current_cols} columns ({col_change*100:.1f}% {direction})',
-                'baseline_value': baseline_cols,
-                'current_value': current_cols,
-                'change_percentage': col_change * 100,
-                'direction': direction
-            })
-        
-        return anomalies
-    
-    def _detect_schema_changes(self, current_columns, baseline_columns):
-        """Detect schema changes between datasets"""
-        changes = []
-        
-        current_cols_set = set(current_columns)
-        baseline_cols_set = set(baseline_columns)
-        
-        # New columns
-        added_cols = current_cols_set - baseline_cols_set
-        for col in added_cols:
-            changes.append({
-                'type': 'column_added',
-                'column': col,
-                'severity': 'Medium',
-                'description': f"New column '{col}' detected that was not in baseline schema"
-            })
-        
-        # Removed columns
-        removed_cols = baseline_cols_set - current_cols_set
-        for col in removed_cols:
-            changes.append({
-                'type': 'column_removed',
-                'column': col,
-                'severity': 'Critical',
-                'description': f"Column '{col}' was present in baseline but missing in current dataset"
-            })
-        
-        return changes
-    
-    def _generate_alerts(self, statistical_drifts, distribution_drifts, volume_anomalies, schema_changes):
-        """Generate alerts for critical drift detection results"""
-        alerts = []
-        timestamp = datetime.now(timezone.utc).isoformat()
-        
-        # Critical statistical drifts
-        critical_stat_drifts = [d for d in statistical_drifts if d['severity'] == 'Critical']
-        for drift in critical_stat_drifts:
-            alerts.append({
-                'id': f"ALT_{uuid.uuid4().hex[:8].upper()}",
-                'type': 'Statistical Drift',
-                'severity': 'Critical',
-                'title': f"{drift['column']} {drift['type'].replace('_', ' ').title()}",
-                'description': drift['description'],
-                'timestamp': timestamp,
-                'status': 'active',
-                'column': drift['column'],
-                'drift_score': drift['drift_score']
-            })
-        
-        # Critical distribution drifts
-        critical_dist_drifts = [d for d in distribution_drifts if d['severity'] == 'Critical']
-        for drift in critical_dist_drifts:
-            alerts.append({
-                'id': f"ALT_{uuid.uuid4().hex[:8].upper()}",
-                'type': 'Distribution Drift',
-                'severity': 'Critical',
-                'title': f"{drift['column']} Distribution Change",
-                'description': drift['description'],
-                'timestamp': timestamp,
-                'status': 'active',
-                'column': drift['column'],
-                'drift_score': drift['drift_score']
-            })
-        
-        # Critical volume anomalies
-        critical_volume = [v for v in volume_anomalies if v['severity'] == 'Critical']
-        for anomaly in critical_volume:
-            alerts.append({
-                'id': f"ALT_{uuid.uuid4().hex[:8].upper()}",
-                'type': 'Volume Anomaly',
-                'severity': 'Critical',
-                'title': f"{anomaly['metric']} Anomaly",
-                'description': anomaly['description'],
-                'timestamp': timestamp,
-                'status': 'active'
-            })
-        
-        # Critical schema changes
-        critical_schema = [s for s in schema_changes if s['severity'] == 'Critical']
-        for change in critical_schema:
-            alerts.append({
-                'id': f"ALT_{uuid.uuid4().hex[:8].upper()}",
-                'type': 'Schema Change',
-                'severity': 'Critical',
-                'title': f"{change['type'].replace('_', ' ').title()}: {change['column']}",
-                'description': change['description'],
-                'timestamp': timestamp,
-                'status': 'active',
-                'column': change['column']
-            })
-        
-        return alerts
-    
-    def _create_summary(self, statistical_drifts, distribution_drifts, volume_anomalies, schema_changes):
-        """Create summary statistics for the analysis"""
-        all_issues = statistical_drifts + distribution_drifts + volume_anomalies + schema_changes
-        
-        severity_counts = {"Critical": 0, "Medium": 0, "Low": 0}
-        for issue in all_issues:
-            severity_counts[issue.get('severity', 'Low')] += 1
-        
-        # Calculate row count change if available
-        row_count_change = 0
-        for anomaly in volume_anomalies:
-            if anomaly.get('type') == 'row_count_anomaly':
-                row_count_change = anomaly.get('change_percentage', 0)
-                break
-        
-        return {
-            "total_issues": len(all_issues),
-            "critical_issues": severity_counts["Critical"],
-            "medium_issues": severity_counts["Medium"],
-            "low_issues": severity_counts["Low"],
-            "row_count_change": row_count_change,
-            "statistical_drift_count": len(statistical_drifts),
-            "distribution_drift_count": len(distribution_drifts),
-            "volume_anomaly_count": len(volume_anomalies),
-            "schema_change_count": len(schema_changes)
-        }
-    
-    def _get_severity(self, score):
-        """Determine severity based on drift score"""
-        if score >= 0.5:  # 50%+ change
-            return "Critical"
-        elif score >= 0.25:  # 25%+ change
-            return "Medium"
-        else:
-            return "Low"
-
-# Database and utility functions (kept from original)
 def get_db_connection():
     if not all([DB_HOST, DB_NAME, DB_USER, DB_PASSWORD]): 
         return None
@@ -516,96 +105,191 @@ def execute_db_query(db_conn, query, params=None, fetch_one=False, fetch_all=Fal
         db_conn.rollback()
         return None
 
-def fetch_baseline_data(db_conn, table_name):
-    """Fetch baseline dataset statistics from database"""
-    if not db_conn or not table_name: 
-        return None, {}
+def ensure_log_table_exists(db_conn):
+    """Ensure the analysis log table exists"""
+    if not db_conn:
+        return
     
-    # Get total row count
-    total_rows_res = execute_db_query(db_conn, f'SELECT COUNT(*) FROM "{table_name}";', fetch_one=True)
-    total_rows = total_rows_res[0] if total_rows_res else 0
-    
-    # Get column information
-    schema_info_rows = execute_db_query(
-        db_conn, 
-        f"SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s;",
-        (table_name,), 
-        fetch_all=True
-    )
-    
-    if not schema_info_rows:
-        return total_rows, {}
-    
-    baseline_stats = {}
-    for col_name, col_type in schema_info_rows:
-        stats = {'column': col_name, 'dtype': col_type}
-        
-        # Calculate statistics based on column type
-        safe_col = f'"{col_name}"'
-        
-        # Null count
-        null_res = execute_db_query(
-            db_conn, 
-            f"SELECT COUNT(*) - COUNT({safe_col}), COUNT(*) FROM \"{table_name}\";",
-            fetch_one=True
-        )
-        if null_res:
-            stats['null_count'] = null_res[0]
-            stats['total_count'] = null_res[1]
-            stats['null_percentage'] = (null_res[0] / null_res[1] * 100) if null_res[1] > 0 else 0
-        
-        # Numeric statistics
-        if any(t in col_type.lower() for t in ['integer', 'numeric', 'real', 'double', 'decimal']):
-            num_res = execute_db_query(
-                db_conn,
-                f"""SELECT 
-                    AVG(CAST({safe_col} AS NUMERIC)), 
-                    STDDEV_SAMP(CAST({safe_col} AS NUMERIC)),
-                    MIN(CAST({safe_col} AS NUMERIC)), 
-                    MAX(CAST({safe_col} AS NUMERIC)),
-                    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY CAST({safe_col} AS NUMERIC)),
-                    PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY CAST({safe_col} AS NUMERIC)),
-                    PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY CAST({safe_col} AS NUMERIC))
-                    FROM \"{table_name}\" 
-                    WHERE {safe_col} IS NOT NULL;""",
-                fetch_one=True
-            )
-            if num_res:
-                stats.update({
-                    'mean': float(num_res[0]) if num_res[0] is not None else 0,
-                    'std': float(num_res[1]) if num_res[1] is not None else 0,
-                    'min': float(num_res[2]) if num_res[2] is not None else 0,
-                    'max': float(num_res[3]) if num_res[3] is not None else 0,
-                    'median': float(num_res[4]) if num_res[4] is not None else 0,
-                    'q25': float(num_res[5]) if num_res[5] is not None else 0,
-                    'q75': float(num_res[6]) if num_res[6] is not None else 0
-                })
-        else:
-            # Categorical statistics
-            cat_res = execute_db_query(
-                db_conn,
-                f"""SELECT COUNT(DISTINCT {safe_col}) as unique_count,
-                    (SELECT CAST({safe_col} AS TEXT) 
-                     FROM \"{table_name}\" 
-                     WHERE {safe_col} IS NOT NULL 
-                     GROUP BY {safe_col} 
-                     ORDER BY COUNT(*) DESC 
-                     LIMIT 1) as most_frequent
-                    FROM \"{table_name}\" 
-                    WHERE {safe_col} IS NOT NULL;""",
-                fetch_one=True
-            )
-            if cat_res:
-                stats.update({
-                    'unique_count': cat_res[0] if cat_res[0] is not None else 0,
-                    'most_frequent': cat_res[1] if cat_res[1] is not None else None
-                })
-        
-        baseline_stats[col_name] = stats
-    
-    return total_rows, _sanitize_for_json(baseline_stats)
+    try:
+        create_table_query = f"""
+        CREATE TABLE IF NOT EXISTS "{ANALYSIS_LOG_TABLE_NAME}" (
+            log_id UUID PRIMARY KEY,
+            run_timestamp TIMESTAMPTZ NOT NULL,
+            status VARCHAR(100) NOT NULL,
+            error_message TEXT,
+            new_data_filename VARCHAR(255),
+            historic_table_name VARCHAR(255),
+            analysis_summary TEXT
+        );
+        """
+        execute_db_query(db_conn, create_table_query)
+        print(f"Log table '{ANALYSIS_LOG_TABLE_NAME}' ensured to exist.")
+    except Exception as e:
+        print(f"Error creating log table: {e}")
 
-def load_current_data(filepath):
+def log_analysis_to_db(db_conn, log_id, status, error_msg=None, filename=None, 
+                      historic_table=None, summary=None):
+    """Log analysis results to database"""
+    if not db_conn:
+        return
+        
+    try:
+        # Ensure log table exists
+        ensure_log_table_exists(db_conn)
+        
+        # Insert log entry
+        insert_query = f"""
+        INSERT INTO "{ANALYSIS_LOG_TABLE_NAME}" 
+        (log_id, run_timestamp, status, error_message, new_data_filename, 
+         historic_table_name, analysis_summary)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        ON CONFLICT (log_id) DO UPDATE SET
+        run_timestamp = EXCLUDED.run_timestamp,
+        status = EXCLUDED.status,
+        error_message = EXCLUDED.error_message,
+        new_data_filename = EXCLUDED.new_data_filename,
+        historic_table_name = EXCLUDED.historic_table_name,
+        analysis_summary = EXCLUDED.analysis_summary;
+        """
+        
+        params = (
+            str(log_id),
+            datetime.now(timezone.utc),
+            str(status)[:100],
+            str(error_msg)[:10000] if error_msg else None,
+            str(filename)[:255] if filename else None,
+            str(historic_table)[:255] if historic_table else None,
+            str(summary)[:20000] if summary else None
+        )
+        
+        execute_db_query(db_conn, insert_query, params)
+        print(f"Logged analysis results to database: {log_id}")
+        
+    except Exception as e:
+        print(f"Failed to log to database: {e}")
+
+def fetch_historic_data(db_conn, table_name, num_sample_rows=HISTORIC_SAMPLE_ROWS_FOR_CONTEXT):
+    """Fetch historic data from PostgreSQL table"""
+    if not db_conn or not table_name: 
+        return None, pd.DataFrame(), {}
+    
+    try:
+        # Get total row count
+        total_rows_res = execute_db_query(db_conn, f'SELECT COUNT(*) FROM "{table_name}";', fetch_one=True)
+        historic_total_rows = total_rows_res[0] if total_rows_res else 0
+        
+        # Get column information
+        schema_info_rows = execute_db_query(
+            db_conn, 
+            f"SELECT column_name, data_type FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s ORDER BY ordinal_position;",
+            (table_name,), 
+            fetch_all=True
+        )
+        
+        if not schema_info_rows:
+            print(f"Could not retrieve schema for historic table '{table_name}'.")
+            return historic_total_rows, pd.DataFrame(), {}
+        
+        # Get sample data
+        db_column_names = [row[0] for row in schema_info_rows]
+        safe_select_cols = ", ".join([f'"{col}"' for col in db_column_names])
+        sample_rows_query = f'SELECT {safe_select_cols} FROM "{table_name}" ORDER BY RANDOM() LIMIT %s;'
+        sample_rows = execute_db_query(db_conn, sample_rows_query, (num_sample_rows,), fetch_all=True)
+        
+        sample_df = pd.DataFrame()
+        if sample_rows:
+            sample_df = pd.DataFrame(sample_rows, columns=db_column_names)
+            
+            # Convert data types
+            for col_name, col_type_str in schema_info_rows:
+                if col_name in sample_df.columns:
+                    if any(t in col_type_str for t in ['integer', 'numeric', 'real', 'double precision', 'smallint', 'bigint']):
+                        sample_df[col_name] = pd.to_numeric(sample_df[col_name], errors='coerce')
+                    elif any(t in col_type_str for t in ['timestamp', 'date']):
+                        sample_df[col_name] = pd.to_datetime(sample_df[col_name], errors='coerce')
+        
+        # Calculate column statistics from database
+        historic_column_stats = {}
+        for col_name, col_type_str in schema_info_rows:
+            safe_col = f'"{col_name}"'
+            stats = {'type': col_type_str, 'column': col_name}
+            
+            # Null count and total
+            null_res = execute_db_query(
+                db_conn, 
+                f"SELECT COUNT(*) - COUNT({safe_col}), COUNT(*) FROM \"{table_name}\";",
+                fetch_one=True
+            )
+            if null_res:
+                stats.update({
+                    'null_count': _to_native_py_type(null_res[0]), 
+                    'total_count': _to_native_py_type(null_res[1]),
+                    'null_percentage': (_to_native_py_type(null_res[0]) / _to_native_py_type(null_res[1]) * 100) if null_res[1] > 0 else 0
+                })
+            
+            # Numeric statistics
+            if any(t in col_type_str for t in ['integer', 'numeric', 'real', 'double precision']):
+                num_res = execute_db_query(
+                    db_conn,
+                    f"""SELECT 
+                        AVG(CAST({safe_col} AS NUMERIC)), 
+                        STDDEV_SAMP(CAST({safe_col} AS NUMERIC)),
+                        MIN(CAST({safe_col} AS NUMERIC)), 
+                        MAX(CAST({safe_col} AS NUMERIC)),
+                        PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY CAST({safe_col} AS NUMERIC)),
+                        PERCENTILE_CONT(0.25) WITHIN GROUP (ORDER BY CAST({safe_col} AS NUMERIC)),
+                        PERCENTILE_CONT(0.75) WITHIN GROUP (ORDER BY CAST({safe_col} AS NUMERIC))
+                        FROM \"{table_name}\" 
+                        WHERE {safe_col} IS NOT NULL;""",
+                    fetch_one=True
+                )
+                if num_res:
+                    stats.update({
+                        'mean': _to_native_py_type(num_res[0]) if num_res[0] is not None else 0,
+                        'std': _to_native_py_type(num_res[1]) if num_res[1] is not None else 0,
+                        'min': _to_native_py_type(num_res[2]) if num_res[2] is not None else 0,
+                        'max': _to_native_py_type(num_res[3]) if num_res[3] is not None else 0,
+                        'median': _to_native_py_type(num_res[4]) if num_res[4] is not None else 0,
+                        'q25': _to_native_py_type(num_res[5]) if num_res[5] is not None else 0,
+                        'q75': _to_native_py_type(num_res[6]) if num_res[6] is not None else 0
+                    })
+            else:
+                # Categorical statistics
+                cat_res = execute_db_query(
+                    db_conn,
+                    f"""SELECT COUNT(DISTINCT {safe_col}) as unique_count,
+                        (SELECT CAST({safe_col} AS TEXT) 
+                         FROM \"{table_name}\" 
+                         WHERE {safe_col} IS NOT NULL 
+                         GROUP BY {safe_col} 
+                         ORDER BY COUNT(*) DESC 
+                         LIMIT 1) as most_frequent,
+                        (SELECT COUNT(*) 
+                         FROM \"{table_name}\" 
+                         WHERE {safe_col} IS NOT NULL 
+                         GROUP BY {safe_col} 
+                         ORDER BY COUNT(*) DESC 
+                         LIMIT 1) as most_frequent_count
+                        FROM \"{table_name}\" 
+                        WHERE {safe_col} IS NOT NULL;""",
+                    fetch_one=True
+                )
+                if cat_res:
+                    stats.update({
+                        'unique_count': _to_native_py_type(cat_res[0]) if cat_res[0] is not None else 0,
+                        'most_frequent': _to_native_py_type(cat_res[1]) if cat_res[1] is not None else None,
+                        'most_frequent_count': _to_native_py_type(cat_res[2]) if cat_res[2] is not None else 0
+                    })
+            
+            historic_column_stats[col_name] = stats
+        
+        return historic_total_rows, sample_df, _sanitize_for_json(historic_column_stats)
+        
+    except Exception as e:
+        print(f"Error fetching historic data from table '{table_name}': {e}")
+        return None, pd.DataFrame(), {}
+
+def load_new_data(filepath):
     """Load current dataset from CSV file"""
     try:
         # Infer data types
@@ -634,169 +318,387 @@ def load_current_data(filepath):
     except Exception as e:
         raise RuntimeError(f"Error loading data from {filepath}: {e}")
 
-def run_drift_analysis(current_filepath, baseline_csv_filepath=None):
+def calculate_new_stats(df):
+    """Calculate statistical summary for current dataset"""
+    stats = {}
+    
+    for column in df.columns:
+        col_stats = {
+            'column': column,
+            'dtype': str(df[column].dtype),
+            'null_count': int(df[column].isnull().sum()),
+            'total_count': len(df[column]),
+            'null_percentage': float(df[column].isnull().sum() / len(df[column]) * 100)
+        }
+        
+        if pd.api.types.is_numeric_dtype(df[column]):
+            non_null_data = df[column].dropna()
+            if len(non_null_data) > 0:
+                col_stats.update({
+                    'mean': float(non_null_data.mean()),
+                    'std': float(non_null_data.std()),
+                    'min': float(non_null_data.min()),
+                    'max': float(non_null_data.max()),
+                    'median': float(non_null_data.median()),
+                    'q25': float(non_null_data.quantile(0.25)),
+                    'q75': float(non_null_data.quantile(0.75))
+                })
+        else:
+            non_null_data = df[column].dropna()
+            if len(non_null_data) > 0:
+                col_stats.update({
+                    'unique_count': int(non_null_data.nunique()),
+                    'most_frequent': str(non_null_data.mode().iloc[0]) if len(non_null_data.mode()) > 0 else None,
+                    'most_frequent_count': int(non_null_data.value_counts().iloc[0]) if len(non_null_data.value_counts()) > 0 else 0
+                })
+        
+        stats[column] = col_stats
+    
+    return stats
+
+def compare_datasets(new_stats, historic_stats):
+    """Compare current dataset with historic baseline"""
+    comparison_results = {
+        'schema_changes': [],
+        'statistical_changes': [],
+        'volume_changes': [],
+        'data_quality_issues': []
+    }
+    
+    new_cols = set(new_stats.keys())
+    historic_cols = set(historic_stats.keys())
+    
+    # Schema changes
+    new_columns = new_cols - historic_cols
+    missing_columns = historic_cols - new_cols
+    
+    for col in new_columns:
+        comparison_results['schema_changes'].append({
+            'type': 'column_added',
+            'column': col,
+            'description': f"New column '{col}' found in current dataset"
+        })
+    
+    for col in missing_columns:
+        comparison_results['schema_changes'].append({
+            'type': 'column_removed',
+            'column': col,
+            'description': f"Column '{col}' missing from current dataset"
+        })
+    
+    # Statistical changes for common columns
+    common_cols = new_cols & historic_cols
+    
+    for col in common_cols:
+        new_col = new_stats[col]
+        historic_col = historic_stats[col]
+        
+        # Check for significant changes in null percentage
+        new_null_pct = new_col.get('null_percentage', 0)
+        historic_null_pct = historic_col.get('null_percentage', 0)
+        null_change = abs(new_null_pct - historic_null_pct)
+        
+        if null_change > 10:  # More than 10% change in null percentage
+            comparison_results['data_quality_issues'].append({
+                'type': 'null_percentage_change',
+                'column': col,
+                'historic_null_pct': historic_null_pct,
+                'new_null_pct': new_null_pct,
+                'change': null_change,
+                'description': f"Null percentage changed by {null_change:.1f}% in column '{col}'"
+            })
+        
+        # Statistical drift for numeric columns
+        if 'mean' in new_col and 'mean' in historic_col:
+            new_mean = new_col['mean']
+            historic_mean = historic_col['mean']
+            
+            if historic_mean != 0:
+                mean_change_pct = abs((new_mean - historic_mean) / historic_mean) * 100
+                
+                if mean_change_pct > 15:  # 15% threshold
+                    comparison_results['statistical_changes'].append({
+                        'type': 'mean_drift',
+                        'column': col,
+                        'historic_mean': historic_mean,
+                        'new_mean': new_mean,
+                        'change_percentage': mean_change_pct,
+                        'description': f"Mean changed by {mean_change_pct:.1f}% in column '{col}'"
+                    })
+            
+            # Standard deviation drift
+            new_std = new_col.get('std', 0)
+            historic_std = historic_col.get('std', 0)
+            
+            if historic_std > 0:
+                std_change_pct = abs((new_std - historic_std) / historic_std) * 100
+                
+                if std_change_pct > 20:  # 20% threshold for std
+                    comparison_results['statistical_changes'].append({
+                        'type': 'std_drift',
+                        'column': col,
+                        'historic_std': historic_std,
+                        'new_std': new_std,
+                        'change_percentage': std_change_pct,
+                        'description': f"Standard deviation changed by {std_change_pct:.1f}% in column '{col}'"
+                    })
+    
+    return comparison_results
+
+def generate_html_report(log_id, new_df, historic_df, new_stats, historic_stats, 
+                        comparison_results, new_filename, historic_table_name):
+    """Generate comprehensive HTML report"""
+    
+    report_html = f"""
+    <div class="report-container">
+        <h2 class="main-title">Data Analysis Report</h2>
+        <p class="log-id-display"><strong>Analysis ID:</strong> {log_id}</p>
+        <hr>
+        
+        <div class="dataset-overview card">
+            <h3>Dataset Overview</h3>
+            <div class="dataset-comparison">
+                <div class="dataset-info current">
+                    <h4>Current Dataset</h4>
+                    <p><strong>Source:</strong> {html.escape(new_filename)}</p>
+                    <p><strong>Rows:</strong> {len(new_df):,}</p>
+                    <p><strong>Columns:</strong> {len(new_df.columns)}</p>
+                </div>
+                <div class="dataset-info historic">
+                    <h4>Historic Dataset</h4>
+                    <p><strong>Source:</strong> PostgreSQL Table: {html.escape(historic_table_name)}</p>
+                    <p><strong>Sample Rows:</strong> {len(historic_df):,}</p>
+                    <p><strong>Columns:</strong> {len(historic_df.columns) if not historic_df.empty else 0}</p>
+                </div>
+            </div>
+        </div>
     """
-    Main function to run data drift analysis
+    
+    # Schema Changes
+    schema_changes = comparison_results.get('schema_changes', [])
+    if schema_changes:
+        report_html += """
+        <div class="schema-changes card">
+            <h3>Schema Changes</h3>
+            <ul>
+        """
+        for change in schema_changes:
+            report_html += f"<li class='{change['type']}'>{html.escape(change['description'])}</li>"
+        report_html += "</ul></div>"
+    
+    # Statistical Changes
+    stat_changes = comparison_results.get('statistical_changes', [])
+    if stat_changes:
+        report_html += """
+        <div class="statistical-changes card">
+            <h3>Statistical Changes</h3>
+            <table class="changes-table">
+                <thead>
+                    <tr>
+                        <th>Column</th>
+                        <th>Type</th>
+                        <th>Historic Value</th>
+                        <th>New Value</th>
+                        <th>Change %</th>
+                    </tr>
+                </thead>
+                <tbody>
+        """
+        for change in stat_changes:
+            if change['type'] == 'mean_drift':
+                report_html += f"""
+                <tr>
+                    <td>{html.escape(change['column'])}</td>
+                    <td>Mean Drift</td>
+                    <td>{change['historic_mean']:.2f}</td>
+                    <td>{change['new_mean']:.2f}</td>
+                    <td>{change['change_percentage']:.1f}%</td>
+                </tr>
+                """
+            elif change['type'] == 'std_drift':
+                report_html += f"""
+                <tr>
+                    <td>{html.escape(change['column'])}</td>
+                    <td>Std Dev Drift</td>
+                    <td>{change['historic_std']:.2f}</td>
+                    <td>{change['new_std']:.2f}</td>
+                    <td>{change['change_percentage']:.1f}%</td>
+                </tr>
+                """
+        report_html += "</tbody></table></div>"
+    
+    # Data Quality Issues
+    dq_issues = comparison_results.get('data_quality_issues', [])
+    if dq_issues:
+        report_html += """
+        <div class="data-quality-issues card">
+            <h3>Data Quality Issues</h3>
+            <ul>
+        """
+        for issue in dq_issues:
+            report_html += f"<li>{html.escape(issue['description'])}</li>"
+        report_html += "</ul></div>"
+    
+    # Data Previews
+    report_html += f"""
+        <div class="data-previews card">
+            <h3>Data Previews</h3>
+            <details open>
+                <summary>Current Data (First 10 rows)</summary>
+                <div class="table-wrapper">
+                    {new_df.head(10).to_html(classes='preview-table', escape=False, table_id='current-data-preview')}
+                </div>
+            </details>
+    """
+    
+    if not historic_df.empty:
+        report_html += f"""
+            <details>
+                <summary>Historic Data Sample (First 10 rows)</summary>
+                <div class="table-wrapper">
+                    {historic_df.head(10).to_html(classes='preview-table', escape=False, table_id='historic-data-preview')}
+                </div>
+            </details>
+        """
+    
+    report_html += "</div>"
+    
+    # Summary
+    total_issues = len(schema_changes) + len(stat_changes) + len(dq_issues)
+    if total_issues == 0:
+        report_html += """
+        <div class="summary card success">
+            <h3>Summary</h3>
+            <p>✅ No significant issues detected. Your data appears consistent with the historic baseline.</p>
+        </div>
+        """
+    else:
+        report_html += f"""
+        <div class="summary card warning">
+            <h3>Summary</h3>
+            <p>⚠️ {total_issues} issue(s) detected that require attention:</p>
+            <ul>
+                <li>Schema Changes: {len(schema_changes)}</li>
+                <li>Statistical Changes: {len(stat_changes)}</li>
+                <li>Data Quality Issues: {len(dq_issues)}</li>
+            </ul>
+        </div>
+        """
+    
+    report_html += "</div>"
+    return report_html
+
+def run_analysis(new_filepath, historic_csv_filepath=None):
+    """
+    Main function to run data analysis comparing current data with historic baseline
     
     Args:
-        current_filepath: Path to current CSV file
-        baseline_csv_filepath: Optional path to baseline CSV file (fallback)
+        new_filepath: Path to current CSV file
+        historic_csv_filepath: Not used, kept for compatibility
         
     Returns:
-        Tuple: (results_dict, html_content, log_id)
+        Tuple: (html_report, historic_preview_html, new_preview_html, log_id, analyzed_data)
     """
     log_id = uuid.uuid4()
     db_conn = get_db_connection()
     
     try:
-        # Initialize analyzer
-        analyzer = DataDriftAnalyzer()
-        
         # Load current dataset
-        current_df = load_current_data(current_filepath)
-        current_filename = os.path.basename(current_filepath)
+        new_df = load_new_data(new_filepath)
+        new_filename = os.path.basename(new_filepath)
         
-        # Load baseline data
-        baseline_total_rows = None
-        baseline_stats = {}
-        baseline_filename = "No baseline available"
+        # Calculate current dataset statistics
+        new_stats = calculate_new_stats(new_df)
+        
+        # Load historic data from PostgreSQL
+        historic_total_rows = None
+        historic_df = pd.DataFrame()
+        historic_stats = {}
+        historic_table_name = HISTORIC_TABLE_NAME or "Not Specified"
         
         if HISTORIC_TABLE_NAME and db_conn:
-            baseline_total_rows, baseline_stats = fetch_baseline_data(db_conn, HISTORIC_TABLE_NAME)
-            baseline_filename = f"Database: {HISTORIC_TABLE_NAME}"
-        elif baseline_csv_filepath and os.path.exists(baseline_csv_filepath):
-            baseline_df = load_current_data(baseline_csv_filepath)
-            baseline_stats = analyzer._calculate_dataset_stats(baseline_df)
-            baseline_total_rows = len(baseline_df)
-            baseline_filename = f"CSV: {os.path.basename(baseline_csv_filepath)}"
+            historic_total_rows, historic_df, historic_stats = fetch_historic_data(
+                db_conn, HISTORIC_TABLE_NAME
+            )
         
-        # Run analysis
-        results = analyzer.analyze_datasets(
-            current_df=current_df,
-            baseline_stats=baseline_stats,
-            baseline_total_rows=baseline_total_rows,
-            current_filename=current_filename,
-            baseline_filename=baseline_filename
+        # Compare datasets
+        comparison_results = compare_datasets(new_stats, historic_stats)
+        
+        # Generate HTML report
+        html_report = generate_html_report(
+            str(log_id), new_df, historic_df, new_stats, historic_stats,
+            comparison_results, new_filename, historic_table_name
         )
         
-        # Generate preview data
-        current_preview = current_df.head(MAX_ROWS_FOR_PREVIEW)
+        # Generate preview HTML
+        new_preview_html = new_df.head(10).to_html(
+            classes='preview-table', escape=False, table_id='current-preview'
+        )
         
-        # Add preview data to results
-        results['current_preview'] = current_preview.to_dict('records')
+        historic_preview_html = ""
+        if not historic_df.empty:
+            historic_preview_html = historic_df.head(10).to_html(
+                classes='preview-table', escape=False, table_id='historic-preview'
+            )
+        else:
+            historic_preview_html = "<p>No historic data available for preview.</p>"
         
-        # Create simple HTML output (detailed HTML generation will be in templates)
-        html_content = f"""
-        <div class="drift-analysis-summary">
-            <h2>Data Drift Analysis Complete</h2>
-            <p><strong>Run ID:</strong> {results['run_id']}</p>
-            <p><strong>Status:</strong> {results['status']}</p>
-            <p><strong>Total Issues Found:</strong> {results['summary']['total_issues']}</p>
-            <p><strong>Critical Issues:</strong> {results['summary']['critical_issues']}</p>
+        # Prepare analyzed data
+        analyzed_data = {
+            'log_id': str(log_id),
+            'new_filename': new_filename,
+            'historic_table_name': historic_table_name,
+            'new_shape': new_df.shape,
+            'historic_shape': historic_df.shape,
+            'new_stats': new_stats,
+            'historic_stats': historic_stats,
+            'comparison_results': comparison_results
+        }
+        
+        # Log to database
+        total_issues = (len(comparison_results.get('schema_changes', [])) + 
+                       len(comparison_results.get('statistical_changes', [])) + 
+                       len(comparison_results.get('data_quality_issues', [])))
+        
+        status = "Success" if total_issues == 0 else f"Completed with {total_issues} issues"
+        summary = f"Analysis completed. Found {total_issues} issues requiring attention."
+        
+        if db_conn:
+            log_analysis_to_db(
+                db_conn, log_id, status, filename=new_filename,
+                historic_table=historic_table_name, summary=summary
+            )
+        
+        return html_report, historic_preview_html, new_preview_html, str(log_id), analyzed_data
+        
+    except Exception as e:
+        error_message = f"Analysis failed: {str(e)}"
+        print(f"Error in run_analysis: {error_message}")
+        
+        # Log error to database
+        if db_conn:
+            log_analysis_to_db(
+                db_conn, log_id, "Failed", error_msg=str(e),
+                filename=os.path.basename(new_filepath) if new_filepath else None,
+                historic_table=HISTORIC_TABLE_NAME
+            )
+        
+        error_html = f"""
+        <div class="error-report card">
+            <h2>Analysis Failed</h2>
+            <p><strong>Error:</strong> {html.escape(str(e))}</p>
+            <p><strong>Log ID:</strong> {log_id}</p>
         </div>
         """
         
-        # Log to database if available
-        if db_conn:
-            log_analysis_to_db(db_conn, log_id, results, current_filename)
-        
-        return results, html_content, str(log_id)
-        
-    except Exception as e:
-        error_msg = f"Analysis failed: {str(e)}"
-        print(f"Error in run_drift_analysis: {error_msg}")
-        
-        error_results = {
-            'run_id': f"ERROR_{uuid.uuid4().hex[:8]}",
-            'timestamp': datetime.now(timezone.utc).isoformat(),
-            'status': 'failed',
-            'error': error_msg,
-            'summary': {'total_issues': 0, 'critical_issues': 0, 'medium_issues': 0, 'low_issues': 0}
+        error_data = {
+            'log_id': str(log_id),
+            'error': str(e),
+            'status': 'failed'
         }
         
-        error_html = f"<div class='error-summary'><h2>Analysis Failed</h2><p>{html.escape(error_msg)}</p></div>"
+        return error_html, "", "", str(log_id), error_data
         
-        return error_results, error_html, str(log_id)
-    
     finally:
         if db_conn:
             db_conn.close()
-
-def ensure_log_table_exists(db_conn):
-    """Ensure the analysis log table exists"""
-    if not db_conn:
-        return
-    
-    try:
-        create_table_query = f"""
-        CREATE TABLE IF NOT EXISTS "{ANALYSIS_LOG_TABLE_NAME}" (
-            log_id UUID PRIMARY KEY,
-            run_timestamp TIMESTAMPTZ NOT NULL,
-            status VARCHAR(100) NOT NULL,
-            current_filename VARCHAR(255),
-            baseline_filename VARCHAR(255),
-            total_issues INTEGER DEFAULT 0,
-            critical_issues INTEGER DEFAULT 0,
-            summary_json TEXT
-        );
-        """
-        execute_db_query(db_conn, create_table_query)
-        print(f"Log table '{ANALYSIS_LOG_TABLE_NAME}' ensured to exist.")
-    except Exception as e:
-        print(f"Error creating log table: {e}")
-        raise
-def log_analysis_to_db(db_conn, log_id, results, filename):
-    """Log analysis results to database"""
-    try:
-        # Ensure log table exists
-        ensure_log_table_exists(db_conn)
-        
-        # Insert log entry
-        insert_query = f"""
-        INSERT INTO "{ANALYSIS_LOG_TABLE_NAME}" 
-        (log_id, run_timestamp, status, current_filename, baseline_filename, 
-         total_issues, critical_issues, summary_json)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-        ON CONFLICT (log_id) DO UPDATE SET
-        run_timestamp = EXCLUDED.run_timestamp,
-        status = EXCLUDED.status,
-        total_issues = EXCLUDED.total_issues,
-        critical_issues = EXCLUDED.critical_issues,
-        summary_json = EXCLUDED.summary_json;
-        """
-        
-        params = (
-            str(log_id),
-            datetime.now(timezone.utc),
-            results.get('status', 'unknown'),
-            filename,
-            results.get('baseline_filename', 'unknown'),
-            results.get('summary', {}).get('total_issues', 0),
-            results.get('summary', {}).get('critical_issues', 0),
-            json.dumps(_sanitize_for_json(results.get('summary', {})))
-        )
-        
-        execute_db_query(db_conn, insert_query, params)
-        print(f"Logged analysis results to database: {log_id}")
-        
-    except Exception as e:
-        print(f"Failed to log to database: {e}")
-
-# Keep the main run_analysis function for backward compatibility
-def run_analysis(new_filepath, historic_csv_filepath=None):
-    """Backward compatibility wrapper"""
-    try:
-        results, html_content, log_id = run_drift_analysis(new_filepath, historic_csv_filepath)
-        
-        # Format for the original template structure
-        return (
-            html_content,  # report_html
-            "",  # historic_preview_html (empty for now)
-            "",  # new_data_preview_html (empty for now)
-            log_id,
-            results  # analyzed_data_for_template
-        )
-    except Exception as e:
-        error_html = f"<div class='error-card'><h2>Critical Error</h2><p>{html.escape(str(e))}</p></div>"
-        error_results = {'error': str(e), 'log_id': str(uuid.uuid4())}
-        return error_html, "", "", error_results['log_id'], error_results

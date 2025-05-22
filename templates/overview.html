@@ -16,7 +16,7 @@
             </a>
             <div class="nav-links">
                 <a href="{{ url_for('index') }}" class="nav-link">Dashboard</a>
-                <a href="{{ url_for('list_runs') }}" class="nav-link">History</a>
+                <a href="{{ url_for('list_db_tables') }}" class="nav-link">History</a>
             </div>
         </nav>
     </header>
@@ -268,7 +268,7 @@
                     <span class="btn-icon">📊</span>
                     New Analysis
                 </a>
-                <a href="{{ url_for('list_runs') }}" class="btn btn-outline">
+                <a href="{{ url_for('list_db_tables') }}" class="btn btn-outline">
                     <span class="btn-icon">📋</span>
                     All Runs
                 </a>

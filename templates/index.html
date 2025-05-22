@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="description" content="Upload new CSV data for analysis against PostgreSQL historical baseline.">
+    <title>Data Analysis Tool - Compare with Historic Baseline</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="icon" href="https://aionos.io/wp-content/uploads/2024/04/cropped-file-1-32x32.png">
+</head>
+<body>
+    <header class="main-nav-container">
+        <nav class="main-nav">
+            <a href="{{ url_for('index') }}">New Analysis</a>
+            <a href="{{ url_for('list_db_tables') }}">View Analysis Logs</a>
+        </nav>
+    </header>
+
+    <main class="container">
+        <h1>Data Analysis Tool</h1>
+        <p class="subtitle">Upload a CSV dataset for comparison against the PostgreSQL historical baseline to detect changes and anomalies.</p>
+
+        {% with messages = get_flashed_messages(with_categories=true) %}
+          {% if messages %}
+            <ul class="flashes" role="alert">
+            {% for category, message in messages %}
+              <li class="{{ category }}">{{ message }}</li>
+            {% endfor %}
+            </ul>
+          {% endif %}
+        {% endwith %}
+
+        <!-- Historic Table Configuration Section -->
+        <section class="historic-table-section card">
+            <h2 class="card-title">
+                <span class="emoji">🗄️</span>
+                Historic Baseline Configuration
+            </h2>
+            <p>Configure the PostgreSQL table to use as your historical baseline for comparison.</p>
+            
+            <form method="post" action="{{ url_for('set_historic_table') }}" id="historic-table-form">
+                <div class="form-group">
+                    <label for="historic_table_name">Historic Table Name:</label>
+                    <div class="input-group">
+                        <input
+                            type="text"
+                            name="historic_table_name"
+                            id="historic_table_name"
+                            required
+                            value="{{ historic_table_name }}"
+                            placeholder="Enter table name (e.g., historical_data)"
+                            aria-describedby="historic-table-help"
+                        />
+                        <button type="submit" class="btn btn-primary" id="table-button">
+                            <span class="btn-icon">💾</span>
+                            Set Table
+                        </button>
+                    </div>
+                    <small id="historic-table-help" class="form-text">
+                        Enter the name of the PostgreSQL table containing your historical baseline data.
+                    </small>
+                </div>
+            </form>
+
+            <!-- Current Configuration Display -->
+            {% if historic_table_name %}
+            <div class="current-config">
+                <h4>Current Configuration:</h4>
+                <div class="config-details">
+                    <span class="config-label">Historic Table:</span>
+                    <span class="config-value">{{ historic_table_name }}</span>
+                    <span class="status-indicator">✓ Configured</span>
+                </div>
+                
+                <div class="config-actions">
+                    <button type="button" class="btn btn-outline btn-sm" onclick="loadTableList()">
+                        <span class="btn-icon">📋</span>
+                        Browse Tables
+                    </button>
+                    <button type="button" class="btn btn-outline btn-sm" onclick="checkTableInfo()">
+                        <span class="btn-icon">🔍</span>
+                        Verify Table
+                    </button>
+                </div>
+            </div>
+            {% else %}
+            <div class="config-warning">
+                <span class="warning-icon">⚠️</span>
+                <span>No historic table configured. Please set a table name before running analysis.</span>
+            </div>
+            {% endif %}
+
+            <!-- Table Browser (Hidden by default) -->
+            <div id="table-browser" class="table-browser" style="display: none;">
+                <h4>Available Tables:</h4>
+                <div id="tables-list">Loading...</div>
+            </div>
+
+            <!-- Table Info Display (Hidden by default) -->
+            <div id="table-info" class="table-info" style="display: none;">
+                <h4>Table Information:</h4>
+                <div id="table-details">Loading...</div>
+            </div>
+        </section>
+
+        <!-- Data Upload Section -->
+        <section class="upload-section card">
+            <h2 class="card-title">
+                <span class="emoji">📊</span>
+                
+            </h2>
+            <p>Upload your current dataset to compare against the historic baseline.</p>
+
+            <form method="post" action="{{ url_for('analyze_data') }}" enctype="multipart/form-data" id="upload-form">
+                <div class="upload-area" id="upload-drop-area">
+                    <label for="new_file" class="file-label">
+                        <span class="file-label-icon">📄</span>
+                        <span class="file-label-main">Drag & Drop or Click to Upload Current Dataset</span>
+                        <span class="file-label-sub">CSV format only. Max size: {{ max_file_upload_mb }}MB</span>
+                    </label>
+                    <input type="file" 
+                           name="new_file" 
+                           id="new_file" 
+                           accept=".csv" 
+                           required>
+                    <div id="file-preview" class="file-preview" style="display: none;"></div>
+                </div>
+
+                <button type="submit" class="submit-button" id="analyze-button">
+                    <span class="btn-icon">🔍</span>
+                    <span id="button-text">Analyze Dataset</span>
+                    <span id="loading-spinner" class="spinner" style="display: none;"></span>
+                </button>
+            </form>
+        </section>
+
+        <!-- Quick Actions -->
+        <section class="quick-actions card">
+            <h3 class="card-title">
+                <span class="emoji">⚡</span>
+                Quick Actions
+            </h3>
+            <div class="action-buttons">
+                <a href="{{ url_for('list_db_tables') }}" class="btn btn-outline">
+                    <span class="btn-icon">📋</span>
+                    View Analysis History
+                </a>
+                <button type="button" class="btn btn-outline" onclick="checkSystemHealth()">
+                    <span class="btn-icon">🔍</span>
+                    System Health Check
+                </button>
+            </div>
+        </section>
+    </main>
+
+    <footer class="page-footer">
+        <p>© {{ current_year }} Data Analysis Tool. Compare datasets against PostgreSQL baselines.</p>
+    </footer>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            const fileInput = document.getElementById('new_file');
+            const filePreview = document.getElementById('file-preview');
+            const uploadForm = document.getElementById('upload-form');
+            const analyzeButton = document.getElementById('analyze-button');
+            const buttonText = document.getElementById('button-text');
+            const loadingSpinner = document.getElementById('loading-spinner');
+            const uploadArea = document.getElementById('upload-drop-area');
+
+            // File selection handling
+            if (fileInput) {
+                fileInput.addEventListener('change', function() {
+                    if (fileInput.files.length > 0) {
+                        const file = fileInput.files[0];
+                        filePreview.innerHTML = `
+                            <div class="file-info">
+                                <span class="file-name">📄 ${file.name}</span>
+                                <span class="file-size">${formatFileSize(file.size)}</span>
+                            </div>
+                        `;
+                        filePreview.style.display = 'block';
+                    } else {
+                        filePreview.style.display = 'none';
+                    }
+                });
+            }
+
+            // Form submission handling
+            if (uploadForm) {
+                uploadForm.addEventListener('submit', function() {
+                    if (!fileInput.files.length) {
+                        alert('Please select a CSV file to upload.');
+                        return false;
+                    }
+
+                    // Check if historic table is configured
+                    const historicTable = '{{ historic_table_name }}';
+                    if (!historicTable) {
+                        alert('Please configure a historic table before running analysis.');
+                        return false;
+                    }
+
+                    // Show loading state
+                    analyzeButton.disabled = true;
+                    buttonText.textContent = 'Analyzing Dataset...';
+                    loadingSpinner.style.display = 'inline-block';
+                    
+                    return true;
+                });
+            }
+
+            // Drag and drop handling
+            if (uploadArea) {
+                ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+                    uploadArea.addEventListener(eventName, preventDefaults, false);
+                });
+
+                function preventDefaults(e) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                }
+
+                ['dragenter', 'dragover'].forEach(eventName => {
+                    uploadArea.addEventListener(eventName, () => {
+                        uploadArea.classList.add('drag-over');
+                    }, false);
+                });
+
+                ['dragleave', 'drop'].forEach(eventName => {
+                    uploadArea.addEventListener(eventName, () => {
+                        uploadArea.classList.remove('drag-over');
+                    }, false);
+                });
+
+                uploadArea.addEventListener('drop', function(e) {
+                    const files = e.dataTransfer.files;
+                    if (files.length > 0) {
+                        const file = files[0];
+                        if (file.name.toLowerCase().endsWith('.csv')) {
+                            fileInput.files = files;
+                            fileInput.dispatchEvent(new Event('change'));
+                        } else {
+                            alert('Only CSV files are allowed.');
+                        }
+                    }
+                });
+            }
+
+            function formatFileSize(bytes) {
+                if (bytes === 0) return '0 Bytes';
+                const k = 1024;
+                const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+            }
+        });
+
+        // Table management functions
+        function loadTableList() {
+            const tableBrowser = document.getElementById('table-browser');
+            const tablesList = document.getElementById('tables-list');
+            
+            tableBrowser.style.display = 'block';
+            tablesList.innerHTML = 'Loading tables...';
+            
+            fetch('/api/db_tables')
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        if (data.tables.length === 0) {
+                            tablesList.innerHTML = `<p class="error">Error loading tables: ${data.message}</p>`;
+                    }
+                }})
+                .catch(error => {
+                    tablesList.innerHTML = `<p class="error">Failed to load tables: ${error.message}</p>`;
+                });
+        }
+
+        function selectTable(tableName) {
+            document.getElementById('historic_table_name').value = tableName;
+            document.getElementById('table-browser').style.display = 'none';
+        }
+
+        function checkTableInfo() {
+            const tableName = document.getElementById('historic_table_name').value;
+            if (!tableName) {
+                alert('Please enter a table name first.');
+                return;
+            }
+
+            const tableInfo = document.getElementById('table-info');
+            const tableDetails = document.getElementById('table-details');
+            
+            tableInfo.style.display = 'block';
+            tableDetails.innerHTML = 'Loading table information...';
+            
+            fetch(`/api/table_info/${encodeURIComponent(tableName)}`)
+                .then(response => response.json())
+                .then(data => {
+                    if (data.status === 'ok') {
+                        let html = `
+                            <div class="table-stats">
+                                <div class="stat-item">
+                                    <span class="stat-label">Table Name:</span>
+                                    <span class="stat-value">${data.table_name}</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">Rows:</span>
+                                    <span class="stat-value">${data.row_count.toLocaleString()}</span>
+                                </div>
+                                <div class="stat-item">
+                                    <span class="stat-label">Columns:</span>
+                                    <span class="stat-value">${data.column_count}</span>
+                                </div>
+                            </div>
+                            <div class="columns-list">
+                                <h5>Columns:</h5>
+                                <div class="columns-grid">
+                        `;
+                        
+                        data.columns.forEach(col => {
+                            html += `
+                                <div class="column-item">
+                                    <span class="column-name">${col.name}</span>
+                                    <span class="column-type">${col.type}</span>
+                                    <span class="column-nullable">${col.nullable ? 'NULL' : 'NOT NULL'}</span>
+                                </div>
+                            `;
+                        });
+                        
+                        html += '</div></div>';
+                        tableDetails.innerHTML = html;
+                    } else {
+                        tableDetails.innerHTML = `<p class="error">Error: ${data.message}</p>`;
+                    }
+                })
+                .catch(error => {
+                    tableDetails.innerHTML = `<p class="error">Failed to load table info: ${error.message}</p>`;
+                });
+        }
+
+        function checkSystemHealth() {
+            fetch('/api/health')
+                .then(response => response.json())
+                .then(data => {
+                    let message = `System Status: ${data.service_status.toUpperCase()}\n\n`;
+                    message += `Database: ${data.components.database.status}\n`;
+                    message += `${data.components.database.message}\n\n`;
+                    message += `Log Table: ${data.components.log_table.status}\n`;
+                    message += `${data.components.log_table.message}\n\n`;
+                    message += `Historic Table Config: ${data.components.historic_table_config.status}\n`;
+                    message += `${data.components.historic_table_config.message}`;
+                    
+                    alert(message);
+                })
+                .catch(error => {
+                    alert(`Health check failed: ${error.message}`);
+                });
+        }
+    </script>
+
+    <style>
+        .input-group {
+            display: flex;
+            gap: 10px;
+            align-items: flex-end;
+        }
+
+        .input-group input {
+            flex: 1;
+            padding: 10px;
+            border: 1px solid var(--border-color);
+            border-radius: var(--border-radius-sm);
+            font-size: 1em;
+        }
+
+        .form-group {
+            margin-bottom: 20px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            font-weight: 600;
+            color: var(--heading-color);
+        }
+
+        .form-text {
+            display: block;
+            margin-top: 5px;
+            color: #6c757d;
+            font-size: 0.9em;
+        }
+
+        .current-config {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #e3f2fd;
+            border-radius: var(--border-radius-sm);
+            border-left: 4px solid var(--primary-color);
+        }
+
+        .config-details {
+            display: flex;
+            align-items: center;
+            gap: 15px;
+            margin-bottom: 15px;
+            flex-wrap: wrap;
+        }
+
+        .config-label {
+            font-weight: 500;
+            color: #666;
+        }
+
+        .config-value {
+            font-family: monospace;
+            font-weight: 600;
+            color: var(--primary-color);
+            background-color: rgba(255, 255, 255, 0.7);
+            padding: 2px 6px;
+            border-radius: 3px;
+        }
+
+        .status-indicator {
+            color: #28a745;
+            font-weight: 600;
+        }
+
+        .config-actions {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+
+        .config-warning {
+            margin-top: 15px;
+            padding: 12px;
+            background-color: #fff3cd;
+            color: #856404;
+            border-radius: var(--border-radius-sm);
+            border-left: 4px solid #ffc107;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .warning-icon {
+            font-size: 1.2em;
+        }
+
+        .table-browser, .table-info {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: var(--border-radius-sm);
+            border: 1px solid var(--border-color);
+        }
+
+        .tables-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+            gap: 15px;
+            margin-top: 10px;
+        }
+
+        .table-item {
+            padding: 15px;
+            background-color: white;
+            border-radius: var(--border-radius-sm);
+            border: 1px solid var(--border-color);
+            text-align: center;
+        }
+
+        .table-name {
+            font-weight: 600;
+            color: var(--primary-color);
+            margin-bottom: 5px;
+        }
+
+        .table-info {
+            color: #666;
+            font-size: 0.9em;
+            margin-bottom: 10px;
+        }
+
+        .table-stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin-bottom: 20px;
+        }
+
+        .stat-item {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            padding: 10px;
+            background-color: white;
+            border-radius: var(--border-radius-sm);
+            text-align: center;
+        }
+
+        .stat-label {
+            font-size: 0.8em;
+            color: #666;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .stat-value {
+            font-weight: 600;
+            color: var(--primary-color);
+        }
+
+        .columns-list h5 {
+            margin-bottom: 10px;
+            color: var(--heading-color);
+        }
+
+        .columns-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+            gap: 8px;
+        }
+
+        .column-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 12px;
+            background-color: white;
+            border-radius: var(--border-radius-sm);
+            font-size: 0.9em;
+        }
+
+        .column-name {
+            font-family: monospace;
+            font-weight: 600;
+        }
+
+        .column-type {
+            color: #666;
+            font-size: 0.8em;
+        }
+
+        .column-nullable {
+            color: #888;
+            font-size: 0.7em;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 15px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+            padding: 10px 16px;
+            border: none;
+            border-radius: var(--border-radius-sm);
+            font-size: 0.9em;
+            font-weight: 500;
+            text-decoration: none;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .btn-primary {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            background-color: var(--primary-hover-color);
+        }
+
+        .btn-outline {
+            background-color: transparent;
+            border: 1px solid var(--primary-color);
+            color: var(--primary-color);
+        }
+
+        .btn-outline:hover {
+            background-color: var(--primary-color);
+            color: white;
+        }
+
+        .btn-sm {
+            padding: 6px 12px;
+            font-size: 0.8em;
+        }
+
+        .btn-icon {
+            font-size: 1em;
+        }
+
+        .error {
+            color: #dc3545;
+            font-style: italic;
+        }
+
+        .file-preview {
+            margin-top: 15px;
+            padding: 10px;
+            background-color: #e3f2fd;
+            border-radius: var(--border-radius-sm);
+        }
+
+        .file-info {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .file-name {
+            font-weight: 500;
+        }
+
+        .file-size {
+            color: #666;
+            font-size: 0.9em;
+        }
+
+        .upload-area.drag-over {
+            border-color: var(--primary-color);
+            background-color: #f0faff;
+        }
+
+        @media (max-width: 768px) {
+            .config-details {
+                flex-direction: column;
+                align-items: flex-start;
+                gap: 10px;
+            }
+
+            .input-group {
+                flex-direction: column;
+                align-items: stretch;
+            }
+
+            .action-buttons {
+                flex-direction: column;
+            }
+
+            .tables-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .table-stats {
+                grid-template-columns: 1fr;
+            }
+
+            .columns-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</body>
+</html>

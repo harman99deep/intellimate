@@ -59,8 +59,7 @@
                                     <div class="alert-severity-indicator">
                                         <span class="severity-label">Drift Severity:</span>
                                         <div class="severity-bar">
-                                            <div class="severity-fill {{ alert.severity.lower() }}" 
-                                                 style="width: {{ (alert.drift_score * 100)|min(100) }}%">
+                                            <div class="severity-fill {{ alert.severity.lower() }}" style="width: {{ (alert.drift_score * 100)|min(100) }}%"></div>
                                         </div>
                                         <span class="severity-value">{{ "%.3f"|format(alert.drift_score) }}</span>
                                     </div>
