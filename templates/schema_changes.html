@@ -20,10 +20,10 @@
             <p class="page-subtitle">Column additions, removals, and structural changes in your dataset</p>
         </div>
 
-        {% if schema_changes %}
+        {% if results.data.schema_changes %}
             <section class="analysis-section">
                 <div class="schema-changes-grid">
-                    {% for change in schema_changes %}
+                    {% for change in results.data.schema_changes %}
                         <div class="change-card {{ change.severity.lower() }}">
                             <div class="change-header">
                                 <div class="change-icon">

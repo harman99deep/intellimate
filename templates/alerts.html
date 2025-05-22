@@ -20,11 +20,11 @@
             <p class="page-subtitle">High-priority issues requiring immediate attention</p>
         </div>
 
-        {% if alerts %}
+        {% if results.data.alerts %}
             <!-- Critical Alerts Section -->
             <section class="analysis-section">
                 <div class="alerts-container">
-                    {% for alert in alerts %}
+                    {% for alert in results.data.alerts %}
                         <div class="alert-card {{ alert.severity.lower() }}">
                             <div class="alert-header">
                                 <div class="alert-indicator {{ alert.severity.lower() }}">
@@ -94,15 +94,15 @@
                 <div class="alert-stats">
                     <div class="stats-row">
                         <div class="stat-group">
-                            <div class="stat-value critical">{{ alerts|selectattr("severity", "equalto", "Critical")|list|length }}</div>
+                            <div class="stat-value critical">{{ results.data.alerts|selectattr("severity", "equalto", "Critical")|list|length }}</div>
                             <div class="stat-label">Critical Alerts</div>
                         </div>
                         <div class="stat-group">
-                            <div class="stat-value medium">{{ alerts|selectattr("severity", "equalto", "Medium")|list|length }}</div>
+                            <div class="stat-value medium">{{ results.data.alerts|selectattr("severity", "equalto", "Medium")|list|length }}</div>
                             <div class="stat-label">Medium Alerts</div>
                         </div>
                         <div class="stat-group">
-                            <div class="stat-value active">{{ alerts|selectattr("status", "equalto", "active")|list|length }}</div>
+                            <div class="stat-value active">{{ results.data.alerts|selectattr("status", "equalto", "active")|list|length }}</div>
                             <div class="stat-label">Active Alerts</div>
                         </div>
                     </div>
@@ -111,7 +111,7 @@
                 <div class="alert-breakdown">
                     <h3>Alert Breakdown by Type</h3>
                     <div class="breakdown-grid">
-                        {% set alert_types = alerts|groupby('type') %}
+                        {% set alert_types = results.data.alerts|groupby('type') %}
                         {% for type, type_alerts in alert_types %}
                             <div class="breakdown-item">
                                 <div class="breakdown-icon">
@@ -133,7 +133,7 @@
                 <div class="priority-actions">
                     <h3>Priority Actions Required</h3>
                     <div class="action-items">
-                        {% set critical_alerts = alerts|selectattr("severity", "equalto", "Critical")|list %}
+                        {% set critical_alerts = results.data.alerts|selectattr("severity", "equalto", "Critical")|list %}
                         {% if critical_alerts %}
                             <div class="action-item critical">
                                 <span class="action-icon">🔥</span>
@@ -145,7 +145,7 @@
                             </div>
                         {% endif %}
                         
-                        {% set drift_alerts = alerts|selectattr("type", "match", ".*Drift.*")|list %}
+                        {% set drift_alerts = results.data.alerts|selectattr("type", "match", ".*Drift.*")|list %}
                         {% if drift_alerts %}
                             <div class="action-item">
                                 <span class="action-icon">📈</span>
@@ -156,7 +156,7 @@
                             </div>
                         {% endif %}
                         
-                        {% set volume_alerts = alerts|selectattr("type", "equalto", "Volume Anomaly")|list %}
+                        {% set volume_alerts = results.data.alerts|selectattr("type", "equalto", "Volume Anomaly")|list %}
                         {% if volume_alerts %}
                             <div class="action-item">
                                 <span class="action-icon">📦</span>
@@ -167,7 +167,7 @@
                             </div>
                         {% endif %}
                         
-                        {% set schema_alerts = alerts|selectattr("type", "equalto", "Schema Change")|list %}
+                        {% set schema_alerts = results.data.alerts|selectattr("type", "equalto", "Schema Change")|list %}
                         {% if schema_alerts %}
                             <div class="action-item">
                                 <span class="action-icon">🔧</span>
@@ -226,7 +226,7 @@
 
         <!-- Navigation Actions -->
         <div class="page-actions">
-            <a href="{{ url_for('view_overview', run_id=run_id) }}" class="btn btn-outline">
+            <a href="{{ url_for('view_results', run_id=run_id) }}" class="btn btn-outline">
                 <span class="btn-icon">📊</span>
                 Back to Overview
             </a>

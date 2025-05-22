@@ -19,19 +19,19 @@
             <p class="page-subtitle">Statistical changes in data distribution, mean, variance, and patterns</p>
         </div>
 
-        {% if data_drift.statistical_drifts or data_drift.distribution_drifts %}
+        {% if results.data.statistical_drifts or results.data.distribution_drifts %}
             
             <!-- Statistical Drift Section -->
-            {% if data_drift.statistical_drifts %}
+            {% if results.data.statistical_drifts %}
                 <section class="analysis-section card">
                     <h2 class="section-title">
                         <span class="section-icon">📊</span>
                         Statistical Drift Detection
-                        <span class="section-count">{{ data_drift.statistical_drifts|length }}</span>
+                        <span class="section-count">{{ results.data.statistical_drifts|length }}</span>
                     </h2>
                     
                     <div class="drift-grid">
-                        {% for drift in data_drift.statistical_drifts %}
+                        {% for drift in results.data.statistical_drifts %}
                             <div class="drift-card {{ drift.severity.lower() }}">
                                 <div class="drift-header">
                                     <div class="drift-info">
@@ -74,12 +74,12 @@
             {% endif %}
 
             <!-- Distribution Drift Section -->
-            {% if data_drift.distribution_drifts %}
+            {% if results.data.distribution_drifts %}
                 <section class="analysis-section card">
                     <h2 class="section-title">
                         <span class="section-icon">📉</span>
                         Distribution Drift Detection
-                        <span class="section-count">{{ data_drift.distribution_drifts|length }}</span>
+                        <span class="section-count">{{ results.data.distribution_drifts|length }}</span>
                     </h2>
                     
                     <div class="distribution-info">
@@ -91,7 +91,7 @@
                     </div>
 
                     <div class="drift-grid">
-                        {% for drift in data_drift.distribution_drifts %}
+                        {% for drift in results.data.distribution_drifts %}
                             <div class="drift-card {{ drift.severity.lower() }}">
                                 <div class="drift-header">
                                     <div class="drift-info">
@@ -214,7 +214,7 @@
 
         <!-- Navigation Actions -->
         <div class="page-actions">
-            <a href="{{ url_for('view_overview', run_id=run_id) }}" class="btn btn-outline">
+            <a href="{{ url_for('view_results', run_id=run_id) }}" class="btn btn-outline">
                 <span class="btn-icon">📊</span>
                 Back to Overview
             </a>

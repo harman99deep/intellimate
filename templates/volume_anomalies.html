@@ -19,11 +19,11 @@
             <p class="page-subtitle">Unexpected changes in data volume, row counts, and dataset size</p>
         </div>
 
-        {% if volume_anomalies %}
+        {% if results.data.volume_anomalies %}
             <!-- Volume Anomalies Grid -->
             <section class="analysis-section">
                 <div class="anomalies-grid">
-                    {% for anomaly in volume_anomalies %}
+                    {% for anomaly in results.data.volume_anomalies %}
                         <div class="anomaly-card {{ anomaly.severity.lower() }}">
                             <div class="anomaly-header">
                                 <div class="anomaly-info">

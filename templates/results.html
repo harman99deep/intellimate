@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Analysis Results - Run {{ run_id }}</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
+    <link rel="icon" href="https://aionos.io/wp-content/uploads/2024/04/cropped-file-1-32x32.png">
+</head>
+<body>
+    {% include 'analysis_nav.html' %}
+
+    <main class="container analysis-content">
+        <div class="page-header">
+            <h1 class="page-title">
+                <span class="page-icon">📊</span>
+                Analysis Overview
+            </h1>
+            <p class="page-subtitle">Summary of all detected data quality issues</p>
+        </div>
+
+        <!-- Analysis Summary Card -->
+        <section class="analysis-section card">
+            <h2 class="section-title">
+                <span class="section-icon">📋</span>
+                Analysis Summary
+            </h2>
+            
+            <div class="summary-content">
+                <div class="summary-info">
+                    <div class="info-row">
+                        <div class="info-label">Run ID:</div>
+                        <div class="info-value">{{ run_id }}</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">Timestamp:</div>
+                        <div class="info-value">{{ results.timestamp[:19] if results.timestamp else 'N/A' }}</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">Status:</div>
+                        <div class="info-value status-{{ results.status|lower }}">{{ results.status }}</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">Current Dataset:</div>
+                        <div class="info-value">{{ results.filename }}</div>
+                    </div>
+                    <div class="info-row">
+                        <div class="info-label">Historic Baseline:</div>
+                        <div class="info-value">{{ results.historic_table }}</div>
+                    </div>
+                </div>
+                
+                <div class="summary-description">
+                    <h3>Analysis Results</h3>
+                    <p>{{ results.summary.text }}</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Issues Overview -->
+        <section class="analysis-section card">
+            <h2 class="section-title">
+                <span class="section-icon">🔍</span>
+                Issues Overview
+            </h2>
+            
+            <div class="issues-grid">
+                <div class="issue-card {{ 'has-issues' if results.summary.statistical_drift_count|default(0) > 0 else '' }}">
+                    <div class="issue-icon">📈</div>
+                    <div class="issue-type">Statistical Drift</div>
+                    <div class="issue-count">{{ results.summary.statistical_drift_count|default(0) }}</div>
+                    <a href="{{ url_for('view_data_drift', run_id=run_id) }}" class="issue-link">View Details</a>
+                </div>
+                
+                <div class="issue-card {{ 'has-issues' if results.summary.distribution_drift_count|default(0) > 0 else '' }}">
+                    <div class="issue-icon">📉</div>
+                    <div class="issue-type">Distribution Drift</div>
+                    <div class="issue-count">{{ results.summary.distribution_drift_count|default(0) }}</div>
+                    <a href="{{ url_for('view_data_drift', run_id=run_id) }}" class="issue-link">View Details</a>
+                </div>
+                
+                <div class="issue-card {{ 'has-issues' if results.summary.volume_anomaly_count|default(0) > 0 else '' }}">
+                    <div class="issue-icon">📦</div>
+                    <div class="issue-type">Volume Anomalies</div>
+                    <div class="issue-count">{{ results.summary.volume_anomaly_count|default(0) }}</div>
+                    <a href="{{ url_for('view_volume_anomalies', run_id=run_id) }}" class="issue-link">View Details</a>
+                </div>
+                
+                <div class="issue-card {{ 'has-issues' if results.summary.schema_change_count|default(0) > 0 else '' }}">
+                    <div class="issue-icon">🔧</div>
+                    <div class="issue-type">Schema Changes</div>
+                    <div class="issue-count">{{ results.summary.schema_change_count|default(0) }}</div>
+                    <a href="{{ url_for('view_schema_changes', run_id=run_id) }}" class="issue-link">View Details</a>
+                </div>
+                
+                <div class="issue-card {{ 'has-issues' if results.summary.alert_count|default(0) > 0 else '' }}">
+                    <div class="issue-icon">🚨</div>
+                    <div class="issue-type">Critical Alerts</div>
+                    <div class="issue-count">{{ results.summary.alert_count|default(0) }}</div>
+                    <a href="{{ url_for('view_alerts', run_id=run_id) }}" class="issue-link">View Details</a>
+                </div>
+            </div>
+        </section>
+
+        {% if results.report_html %}
+        <!-- Detailed Report Section -->
+        <section class="analysis-section card">
+            <h2 class="section-title">
+                <span class="section-icon">📝</span>
+                Detailed Report
+            </h2>
+            
+            <div class="report-content">
+                {{ results.report_html|safe }}
+            </div>
+        </section>
+        {% endif %}
+
+        <!-- Navigation Actions -->
+        <div class="page-actions">
+            <a href="{{ url_for('index') }}" class="btn btn-outline">
+                <span class="btn-icon">🏠</span>
+                Return to Dashboard
+            </a>
+            <a href="{{ url_for('analysis_nav') }}" class="btn btn-outline">
+                <span class="btn-icon">📋</span>
+                View All Analysis Logs
+            </a>
+        </div>
+    </main>
+
+    <script>
+        document.addEventListener('DOMContentLoaded', function() {
+            // Add any JavaScript needed for the results page
+        });
+    </script>
+</body>
+</html>

@@ -12,7 +12,7 @@
     <header class="main-nav-container">
         <nav class="main-nav">
             <a href="{{ url_for('index') }}">New Analysis</a>
-            <a href="{{ url_for('list_db_tables') }}">View Analysis Logs</a>
+            <a href="{{ url_for('analysis_nav') }}">View Analysis Logs</a>
         </nav>
     </header>
 
@@ -73,10 +73,6 @@
                 </div>
                 
                 <div class="config-actions">
-                    <button type="button" class="btn btn-outline btn-sm" onclick="loadTableList()">
-                        <span class="btn-icon">📋</span>
-                        Browse Tables
-                    </button>
                     <button type="button" class="btn btn-outline btn-sm" onclick="checkTableInfo()">
                         <span class="btn-icon">🔍</span>
                         Verify Table
@@ -107,30 +103,64 @@
         <section class="upload-section card">
             <h2 class="card-title">
                 <span class="emoji">📊</span>
-                
+                Data Upload
             </h2>
-            <p>Upload your current dataset to compare against the historic baseline.</p>
+            <p class="section-description">Upload your current dataset to compare against the historic baseline and identify changes, anomalies, and data quality issues.</p>
 
             <form method="post" action="{{ url_for('analyze_data') }}" enctype="multipart/form-data" id="upload-form">
-                <div class="upload-area" id="upload-drop-area">
-                    <label for="new_file" class="file-label">
-                        <span class="file-label-icon">📄</span>
-                        <span class="file-label-main">Drag & Drop or Click to Upload Current Dataset</span>
-                        <span class="file-label-sub">CSV format only. Max size: {{ max_file_upload_mb }}MB</span>
-                    </label>
-                    <input type="file" 
-                           name="new_file" 
-                           id="new_file" 
-                           accept=".csv" 
-                           required>
-                    <div id="file-preview" class="file-preview" style="display: none;"></div>
+                <div class="upload-container">
+                    <div class="upload-area" id="upload-drop-area">
+                        <div class="upload-icon-container">
+                            <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="64" height="64">
+                                <path fill="none" d="M0 0h24v24H0z"/>
+                                <path d="M12 12.586l4.243 4.242-1.415 1.415L13 16.415V22h-2v-5.587l-1.828 1.83-1.415-1.415L12 12.586zM12 2a7.001 7.001 0 0 1 6.954 6.194 5.5 5.5 0 0 1-.953 10.784v-2.014a3.5 3.5 0 1 0-1.112-6.91 5 5 0 1 0-9.777 0 3.5 3.5 0 0 0-1.292 6.88l.18.03v2.014a5.5 5.5 0 0 1-.954-10.784A7 7 0 0 1 12 2z"/>
+                            </svg>
+                        </div>
+                        <div class="upload-text">
+                            <h3>Drag & Drop Your CSV File Here</h3>
+                            <p>or</p>
+                            <label for="new_file" class="browse-button">Browse Files</label>
+                            <p class="file-requirements">CSV format only. Maximum size: {{ max_file_upload_mb }}MB</p>
+                        </div>
+                        <input type="file" 
+                               name="new_file" 
+                               id="new_file" 
+                               accept=".csv" 
+                               required>
+                    </div>
+                    
+                    <div id="file-preview" class="file-preview" style="display: none;">
+                        <div class="file-preview-header">
+                            <h4>Selected File</h4>
+                            <button type="button" class="remove-file" onclick="removeFile()">×</button>
+                        </div>
+                        <div class="file-preview-content"></div>
+                    </div>
                 </div>
 
-                <button type="submit" class="submit-button" id="analyze-button">
-                    <span class="btn-icon">🔍</span>
-                    <span id="button-text">Analyze Dataset</span>
-                    <span id="loading-spinner" class="spinner" style="display: none;"></span>
-                </button>
+                <div class="action-container">
+                    <div class="analysis-options">
+                        <div class="option-label">Analysis Type:</div>
+                        <div class="option-group">
+                            <label class="option-item active">
+                                <input type="radio" name="analysis_type" value="comprehensive" checked>
+                                <span class="option-icon">🔍</span>
+                                <span class="option-text">Comprehensive</span>
+                            </label>
+                            <label class="option-item">
+                                <input type="radio" name="analysis_type" value="quick">
+                                <span class="option-icon">⚡</span>
+                                <span class="option-text">Quick Scan</span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <button type="submit" class="submit-button" id="analyze-button">
+                        <span class="btn-icon">📊</span>
+                        <span id="button-text">Analyze Dataset</span>
+                        <span id="loading-spinner" class="spinner" style="display: none;"></span>
+                    </button>
+                </div>
             </form>
         </section>
 
@@ -141,7 +171,7 @@
                 Quick Actions
             </h3>
             <div class="action-buttons">
-                <a href="{{ url_for('list_db_tables') }}" class="btn btn-outline">
+                <a href="{{ url_for('analysis_nav') }}" class="btn btn-outline">
                     <span class="btn-icon">📋</span>
                     View Analysis History
                 </a>
@@ -161,28 +191,62 @@
         document.addEventListener('DOMContentLoaded', function() {
             const fileInput = document.getElementById('new_file');
             const filePreview = document.getElementById('file-preview');
+            const filePreviewContent = document.querySelector('.file-preview-content');
             const uploadForm = document.getElementById('upload-form');
             const analyzeButton = document.getElementById('analyze-button');
             const buttonText = document.getElementById('button-text');
             const loadingSpinner = document.getElementById('loading-spinner');
             const uploadArea = document.getElementById('upload-drop-area');
+            const optionItems = document.querySelectorAll('.option-item');
+
+            // Option selection handling
+            if (optionItems.length) {
+                optionItems.forEach(item => {
+                    item.addEventListener('click', function() {
+                        // Remove active class from all options
+                        optionItems.forEach(opt => opt.classList.remove('active'));
+                        // Add active class to clicked option
+                        this.classList.add('active');
+                        // Check the radio button
+                        const radio = this.querySelector('input[type="radio"]');
+                        if (radio) radio.checked = true;
+                    });
+                });
+            }
 
             // File selection handling
             if (fileInput) {
                 fileInput.addEventListener('change', function() {
                     if (fileInput.files.length > 0) {
                         const file = fileInput.files[0];
-                        filePreview.innerHTML = `
-                            <div class="file-info">
-                                <span class="file-name">📄 ${file.name}</span>
-                                <span class="file-size">${formatFileSize(file.size)}</span>
-                            </div>
-                        `;
-                        filePreview.style.display = 'block';
+                        displayFilePreview(file);
                     } else {
                         filePreview.style.display = 'none';
                     }
                 });
+            }
+
+            function displayFilePreview(file) {
+                // Create file info HTML
+                filePreviewContent.innerHTML = `
+                    <div class="file-info">
+                        <span class="file-name">📄 ${file.name}</span>
+                        <span class="file-size">${formatFileSize(file.size)}</span>
+                    </div>
+                `;
+                filePreview.style.display = 'block';
+                // Hide the upload area or make it less prominent
+                uploadArea.style.opacity = '0.6';
+            }
+            
+            // Function to remove selected file
+            window.removeFile = function() {
+                // Clear the file input
+                fileInput.value = '';
+                // Hide the file preview
+                filePreview.style.display = 'none';
+                // Restore the upload area
+                uploadArea.style.opacity = '1';
             }
 
             // Form submission handling

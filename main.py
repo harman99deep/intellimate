@@ -27,6 +27,78 @@ os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
+# Helper function to load analysis data from database
+def load_analysis_from_db(log_id):
+    """Load analysis data from database by log_id"""
+    if not log_id:
+        return None
+        
+    try:
+        db_conn = analysis_engine.get_db_connection()
+        if not db_conn:
+            app.logger.error("Database connection failed when loading analysis")
+            return None
+            
+        # Ensure the log table exists
+        analysis_engine.ensure_log_table_exists(db_conn)
+        
+        with db_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
+            query = f"""
+            SELECT log_id, run_timestamp, status, new_data_filename, 
+                   historic_table_name, error_message, analysis_summary
+            FROM "{analysis_engine.ANALYSIS_LOG_TABLE_NAME}"
+            WHERE log_id = %s
+            """
+            cursor.execute(query, (log_id,))
+            log_data = cursor.fetchone()
+            
+            if not log_data:
+                return None
+                
+            # Convert to dict and parse the analysis summary
+            analysis_data = dict(log_data)
+            analysis_data['log_id'] = str(analysis_data['log_id'])  # Ensure UUID is string
+            
+            # Parse analysis summary if available
+            if analysis_data.get('analysis_summary'):
+                try:
+                    summary = json.loads(analysis_data['analysis_summary'])
+                    # Create a results structure similar to what we use in the session
+                    results = {
+                        'log_id': analysis_data['log_id'],
+                        'timestamp': analysis_data['run_timestamp'].isoformat() if isinstance(analysis_data['run_timestamp'], datetime) else analysis_data['run_timestamp'],
+                        'summary': {
+                            'statistical_drift_count': len(summary.get('statistical_drifts', [])),
+                            'distribution_drift_count': len(summary.get('distribution_drifts', [])),
+                            'volume_anomaly_count': len(summary.get('volume_anomalies', [])),
+                            'schema_change_count': len(summary.get('schema_changes', [])),
+                            'critical_issues': summary.get('critical_issues', 0)
+                        },
+                        'data': summary  # Store the full data
+                    }
+                    return results
+                except (json.JSONDecodeError, AttributeError) as e:
+                    app.logger.error(f"Error parsing analysis summary: {e}")
+            
+            # If we couldn't parse the summary or it doesn't exist, return a basic structure
+            return {
+                'log_id': analysis_data['log_id'],
+                'timestamp': analysis_data['run_timestamp'].isoformat() if isinstance(analysis_data['run_timestamp'], datetime) else analysis_data['run_timestamp'],
+                'summary': {
+                    'statistical_drift_count': 0,
+                    'distribution_drift_count': 0,
+                    'volume_anomaly_count': 0,
+                    'schema_change_count': 0,
+                    'critical_issues': 0
+                },
+                'data': {}
+            }
+            
+    except Exception as e:
+        app.logger.error(f"Error loading analysis from database: {e}")
+        return None
+
+# --- Routes ---
 @app.route('/')
 def index():
     """Main dashboard - Upload interface with historic table configuration"""
@@ -178,11 +250,11 @@ def get_table_info(table_name):
 @app.route('/analyze', methods=['POST'])
 def analyze_data():
     """Process uploaded file and run analysis against historic baseline"""
-    if 'current_file' not in request.files:
+    if 'new_file' not in request.files:
         flash('Current dataset file (CSV) is required.', 'error')
         return redirect(url_for('index'))
     
-    current_file = request.files['current_file']
+    current_file = request.files['new_file']
     
     if current_file.filename == '':
         flash('No file selected. Please upload a CSV.', 'error')
@@ -212,18 +284,33 @@ def analyze_data():
         report_html, historic_preview_html, current_preview_html, log_id, analyzed_data = \
             analysis_engine.run_analysis(filepath)
         
-        # Store results in session
+        # Store results in session with the structure expected by templates
         session['last_analysis'] = {
             'log_id': log_id,
             'report_html': report_html,
             'historic_preview_html': historic_preview_html,
             'current_preview_html': current_preview_html,
-            'analyzed_data': analyzed_data,
-            'timestamp': datetime.now(timezone.utc).isoformat()
+            'filename': filename_secure,
+            'historic_table': analysis_engine.HISTORIC_TABLE_NAME,
+            'status': 'Completed',
+            'timestamp': datetime.now(timezone.utc).isoformat(),
+            'summary': {
+                'text': f"Analysis completed with {len(analyzed_data.get('statistical_drifts', []))} statistical drifts, "
+                       f"{len(analyzed_data.get('distribution_drifts', []))} distribution drifts, "
+                       f"{len(analyzed_data.get('volume_anomalies', []))} volume anomalies, "
+                       f"{len(analyzed_data.get('schema_changes', []))} schema changes, and "
+                       f"{len(analyzed_data.get('alerts', []))} alerts.",
+                'statistical_drift_count': len(analyzed_data.get('statistical_drifts', [])),
+                'distribution_drift_count': len(analyzed_data.get('distribution_drifts', [])),
+                'volume_anomaly_count': len(analyzed_data.get('volume_anomalies', [])),
+                'schema_change_count': len(analyzed_data.get('schema_changes', [])),
+                'alert_count': len(analyzed_data.get('alerts', []))
+            },
+            'data': analyzed_data  # Store the full analysis data
         }
         
         flash(f"Analysis completed successfully! Log ID: {log_id}", "success")
-        return redirect(url_for('view_results', log_id=log_id))
+        return redirect(url_for('analysis_nav', run_id=log_id))
         
     except Exception as e:
         app.logger.error(f"Analysis failed for file {filename_secure}: {e}", exc_info=True)
@@ -238,44 +325,212 @@ def view_results(log_id):
     
     if last_analysis and last_analysis.get('log_id') == log_id:
         return render_template('results.html',
-                             log_id=log_id,
-                             report_html=last_analysis['report_html'],
-                             historic_preview_html=last_analysis['historic_preview_html'],
-                             current_preview_html=last_analysis['current_preview_html'],
-                             analyzed_data=last_analysis['analyzed_data'])
+                             run_id=log_id,
+                             current_tab='overview',
+                             results=last_analysis)
     
     # Try to load from database
     try:
         analysis_data = load_analysis_from_db(log_id)
         if analysis_data:
             return render_template('results.html',
-                                 log_id=log_id,
-                                 report_html=analysis_data.get('report_html', '<p>Report not available</p>'),
-                                 historic_preview_html=analysis_data.get('historic_preview_html', ''),
-                                 current_preview_html=analysis_data.get('current_preview_html', ''),
-                                 analyzed_data=analysis_data)
+                                 run_id=log_id,
+                                 current_tab='overview',
+                                 results=analysis_data)
         else:
-            flash(f"Analysis with Log ID {log_id} not found.", "error")
-            return redirect(url_for('analysis_logs'))
+            flash(f"Analysis with ID {log_id} not found.", "error")
+            return redirect(url_for('analysis_nav'))
             
     except Exception as e:
         app.logger.error(f"Error loading analysis {log_id}: {e}")
         flash("Error loading analysis results.", "error")
-        return redirect(url_for('analysis_logs'))
+        return redirect(url_for('analysis_nav'))
 
-@app.route('/analysis_logs')
-def analysis_logs():
+@app.route('/overview/<run_id>')
+def view_overview(run_id):
+    """Display overview of analysis results"""
+    # Try to get from session first
+    last_analysis = session.get('last_analysis')
+    
+    if last_analysis and last_analysis.get('log_id') == run_id:
+        return render_template('results.html',
+                             run_id=run_id,
+                             current_tab='overview',
+                             results=last_analysis)
+    
+    # Try to load from database
+    try:
+        analysis_data = load_analysis_from_db(run_id)
+        if analysis_data:
+            return render_template('results.html',
+                                 run_id=run_id,
+                                 current_tab='overview',
+                                 results=analysis_data)
+        else:
+            flash(f"Analysis with ID {run_id} not found.", "error")
+            return redirect(url_for('analysis_nav'))
+            
+    except Exception as e:
+        app.logger.error(f"Error loading analysis {run_id}: {e}")
+        flash("Error loading analysis results.", "error")
+        return redirect(url_for('analysis_nav'))
+
+@app.route('/data-drift/<run_id>')
+def view_data_drift(run_id):
+    """Display data drift analysis results"""
+    # Try to get from session first
+    last_analysis = session.get('last_analysis')
+    
+    if last_analysis and last_analysis.get('log_id') == run_id:
+        return render_template('data_drift.html',
+                             run_id=run_id,
+                             current_tab='data-drift',
+                             results=last_analysis)
+    
+    # Try to load from database
+    try:
+        analysis_data = load_analysis_from_db(run_id)
+        if analysis_data:
+            return render_template('data_drift.html',
+                                 run_id=run_id,
+                                 current_tab='data-drift',
+                                 results=analysis_data)
+        else:
+            flash(f"Analysis with ID {run_id} not found.", "error")
+            return redirect(url_for('analysis_nav'))
+            
+    except Exception as e:
+        app.logger.error(f"Error loading analysis {run_id}: {e}")
+        flash("Error loading analysis results.", "error")
+        return redirect(url_for('analysis_nav'))
+
+@app.route('/volume-anomalies/<run_id>')
+def view_volume_anomalies(run_id):
+    """Display volume anomalies analysis results"""
+    # Try to get from session first
+    last_analysis = session.get('last_analysis')
+    
+    if last_analysis and last_analysis.get('log_id') == run_id:
+        return render_template('volume_anomalies.html',
+                             run_id=run_id,
+                             current_tab='volume-anomalies',
+                             results=last_analysis)
+    
+    # Try to load from database
+    try:
+        analysis_data = load_analysis_from_db(run_id)
+        if analysis_data:
+            return render_template('volume_anomalies.html',
+                                 run_id=run_id,
+                                 current_tab='volume-anomalies',
+                                 results=analysis_data)
+        else:
+            flash(f"Analysis with ID {run_id} not found.", "error")
+            return redirect(url_for('analysis_nav'))
+            
+    except Exception as e:
+        app.logger.error(f"Error loading analysis {run_id}: {e}")
+        flash("Error loading analysis results.", "error")
+        return redirect(url_for('analysis_nav'))
+
+@app.route('/schema-changes/<run_id>')
+def view_schema_changes(run_id):
+    """Display schema changes analysis results"""
+    # Try to get from session first
+    last_analysis = session.get('last_analysis')
+    
+    if last_analysis and last_analysis.get('log_id') == run_id:
+        return render_template('schema_changes.html',
+                             run_id=run_id,
+                             current_tab='schema-changes',
+                             results=last_analysis)
+    
+    # Try to load from database
+    try:
+        analysis_data = load_analysis_from_db(run_id)
+        if analysis_data:
+            return render_template('schema_changes.html',
+                                 run_id=run_id,
+                                 current_tab='schema-changes',
+                                 results=analysis_data)
+        else:
+            flash(f"Analysis with ID {run_id} not found.", "error")
+            return redirect(url_for('analysis_nav'))
+            
+    except Exception as e:
+        app.logger.error(f"Error loading analysis {run_id}: {e}")
+        flash("Error loading analysis results.", "error")
+        return redirect(url_for('analysis_nav'))
+
+@app.route('/alerts/<run_id>')
+def view_alerts(run_id):
+    """Display alerts from analysis results"""
+    # Try to get from session first
+    last_analysis = session.get('last_analysis')
+    
+    if last_analysis and last_analysis.get('log_id') == run_id:
+        return render_template('alerts.html',
+                             run_id=run_id,
+                             current_tab='alerts',
+                             results=last_analysis)
+    
+    # Try to load from database
+    try:
+        analysis_data = load_analysis_from_db(run_id)
+        if analysis_data:
+            return render_template('alerts.html',
+                                 run_id=run_id,
+                                 current_tab='alerts',
+                                 results=analysis_data)
+        else:
+            flash(f"Analysis with ID {run_id} not found.", "error")
+            return redirect(url_for('analysis_nav'))
+            
+    except Exception as e:
+        app.logger.error(f"Error loading analysis {run_id}: {e}")
+        flash("Error loading analysis results.", "error")
+        return redirect(url_for('analysis_nav'))
+
+
+
+@app.route('/analysis_nav')
+def analysis_nav():
     """Display analysis logs from database"""
     logs = []
     db_conn = None
     error_message = None
+    
+    # Default values for the template
+    run_id = None
+    results = {
+        'timestamp': datetime.now(timezone.utc).isoformat(),
+        'summary': {
+            'text': 'No analysis data available',
+            'statistical_drift_count': 0,
+            'distribution_drift_count': 0,
+            'volume_anomaly_count': 0,
+            'schema_change_count': 0,
+            'alert_count': 0
+        },
+        'data': {
+            'statistical_drifts': [],
+            'distribution_drifts': [],
+            'volume_anomalies': [],
+            'schema_changes': [],
+            'alerts': []
+        }
+    }
     
     try:
         db_conn = analysis_engine.get_db_connection()
         if not db_conn:
             flash("Database connection failed. Cannot display logs.", "error")
             error_message = "Database connection failed"
-            return render_template('analysis_logs.html', logs=logs, error_message=error_message)
+            return render_template('analysis_nav.html', 
+                                logs=logs, 
+                                error_message=error_message,
+                                run_id=run_id,
+                                results=results)
         
         # Ensure the log table exists
         analysis_engine.ensure_log_table_exists(db_conn)
@@ -291,6 +546,23 @@ def analysis_logs():
             cursor.execute(query)
             logs_data = cursor.fetchall()
             logs = [dict(row) for row in logs_data]
+            
+            # If we have logs, use the most recent one for the header
+            if logs:
+                run_id = logs[0].get('log_id')
+                if logs[0].get('analysis_summary'):
+                    try:
+                        summary = json.loads(logs[0]['analysis_summary'])
+                        results['summary'].update({
+                            'statistical_drift_count': len(summary.get('statistical_drifts', [])),
+                            'distribution_drift_count': len(summary.get('distribution_drifts', [])),
+                            'volume_anomaly_count': len(summary.get('volume_anomalies', [])),
+                            'schema_change_count': len(summary.get('schema_changes', [])),
+                            'critical_issues': summary.get('critical_issues', 0)
+                        })
+                        results['timestamp'] = logs[0].get('run_timestamp', results['timestamp'])
+                    except (json.JSONDecodeError, AttributeError) as e:
+                        app.logger.error(f"Error parsing analysis summary: {e}")
     
     except psycopg2.Error as e:
         app.logger.error(f"Database error fetching logs: {e}")
@@ -304,7 +576,12 @@ def analysis_logs():
         if db_conn:
             db_conn.close()
     
-    return render_template('analysis_logs.html', logs=logs, error_message=error_message)
+    return render_template('analysis_nav.html', 
+                         logs=logs, 
+                         error_message=error_message,
+                         run_id=run_id,
+                         results=results,
+                         current_tab='overview')
 
 @app.route('/api/health')
 def health_check():
@@ -387,7 +664,7 @@ def load_analysis_from_db(log_id):
         with db_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
             query = f"""
             SELECT log_id, run_timestamp, status, new_data_filename, 
-                   historic_table_name, error_message, analysis_summary
+                   historic_table_name, error_message, analysis_summary, analysis_data
             FROM "{analysis_engine.ANALYSIS_LOG_TABLE_NAME}"
             WHERE log_id = %s;
             """
@@ -395,6 +672,61 @@ def load_analysis_from_db(log_id):
             row = cursor.fetchone()
             
             if row:
+                # Try to parse the analysis_data JSON if it exists
+                analysis_data = {}
+                if row['analysis_summary']:
+                    try:
+                        # Parse the summary to extract counts
+                        summary_text = row['analysis_summary']
+                        statistical_drift_count = 0
+                        distribution_drift_count = 0
+                        volume_anomaly_count = 0
+                        schema_change_count = 0
+                        alert_count = 0
+                        
+                        # Extract counts from summary text using regex
+                        import re
+                        stat_match = re.search(r'(\d+)\s+statistical\s+drift', summary_text, re.IGNORECASE)
+                        if stat_match:
+                            statistical_drift_count = int(stat_match.group(1))
+                            
+                        dist_match = re.search(r'(\d+)\s+distribution\s+drift', summary_text, re.IGNORECASE)
+                        if dist_match:
+                            distribution_drift_count = int(dist_match.group(1))
+                            
+                        vol_match = re.search(r'(\d+)\s+volume\s+anomal', summary_text, re.IGNORECASE)
+                        if vol_match:
+                            volume_anomaly_count = int(vol_match.group(1))
+                            
+                        schema_match = re.search(r'(\d+)\s+schema\s+change', summary_text, re.IGNORECASE)
+                        if schema_match:
+                            schema_change_count = int(schema_match.group(1))
+                            
+                        alert_match = re.search(r'(\d+)\s+alert', summary_text, re.IGNORECASE)
+                        if alert_match:
+                            alert_count = int(alert_match.group(1))
+                    except Exception as e:
+                        app.logger.error(f"Error parsing summary counts: {e}")
+                
+                # Create default data structure for templates
+                default_data = {
+                    'statistical_drifts': [],
+                    'distribution_drifts': [],
+                    'volume_anomalies': [],
+                    'schema_changes': [],
+                    'alerts': []
+                }
+                
+                # Try to parse the analysis_data JSON if it exists
+                if row.get('analysis_data'):
+                    try:
+                        import json
+                        parsed_data = json.loads(row['analysis_data'])
+                        if isinstance(parsed_data, dict):
+                            default_data.update(parsed_data)
+                    except Exception as e:
+                        app.logger.error(f"Error parsing analysis_data JSON: {e}")
+                
                 return {
                     'log_id': str(row['log_id']),
                     'timestamp': row['run_timestamp'].isoformat() if row['run_timestamp'] else None,
@@ -402,7 +734,15 @@ def load_analysis_from_db(log_id):
                     'filename': row['new_data_filename'],
                     'historic_table': row['historic_table_name'],
                     'error_message': row['error_message'],
-                    'summary': row['analysis_summary'],
+                    'summary': {
+                        'text': row['analysis_summary'],
+                        'statistical_drift_count': statistical_drift_count,
+                        'distribution_drift_count': distribution_drift_count,
+                        'volume_anomaly_count': volume_anomaly_count,
+                        'schema_change_count': schema_change_count,
+                        'alert_count': alert_count
+                    },
+                    'data': default_data,
                     'report_html': f"<div class='card'><h3>Log Entry Details</h3><p><strong>Status:</strong> {row['status']}</p><p><strong>Summary:</strong> {row['analysis_summary'] or 'No summary available'}</p></div>"
                 }
     except Exception as e:

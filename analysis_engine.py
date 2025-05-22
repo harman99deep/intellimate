@@ -643,7 +643,122 @@ def run_analysis(new_filepath, historic_csv_filepath=None):
         else:
             historic_preview_html = "<p>No historic data available for preview.</p>"
         
-        # Prepare analyzed data
+        # Prepare analyzed data with the structure expected by templates
+        # Extract statistical drifts
+        statistical_drifts = []
+        for col, changes in comparison_results.get('statistical_changes', {}).items():
+            if changes.get('significant_change', False):
+                drift_score = abs(changes.get('percent_change', 0)) / 100
+                severity = 'High' if drift_score > 0.5 else 'Medium' if drift_score > 0.2 else 'Low'
+                statistical_drifts.append({
+                    'column': col,
+                    'type': 'statistical_drift',
+                    'drift_score': drift_score,
+                    'severity': severity,
+                    'description': f"Statistical drift detected in {col}. Changed by {changes.get('percent_change', 0):.2f}%."
+                })
+        
+        # Extract distribution drifts
+        distribution_drifts = []
+        for col, changes in comparison_results.get('distribution_changes', {}).items():
+            if changes.get('significant_change', False):
+                p_value = changes.get('p_value', 0.5)
+                test_statistic = changes.get('test_statistic', 0)
+                drift_score = 1 - p_value if p_value <= 1 else 0
+                severity = 'High' if p_value < 0.01 else 'Medium' if p_value < 0.05 else 'Low'
+                distribution_drifts.append({
+                    'column': col,
+                    'type': 'distribution_drift',
+                    'p_value': p_value,
+                    'test_statistic': test_statistic,
+                    'drift_score': drift_score,
+                    'severity': severity,
+                    'description': f"Distribution drift detected in {col}. P-value: {p_value:.4f}."
+                })
+        
+        # Extract volume anomalies
+        volume_anomalies = []
+        row_count_change = comparison_results.get('row_count_change', 0)
+        if abs(row_count_change) > 10:
+            severity = 'High' if abs(row_count_change) > 50 else 'Medium' if abs(row_count_change) > 20 else 'Low'
+            volume_anomalies.append({
+                'metric': 'Row Count',
+                'type': 'volume_anomaly',
+                'change_percent': row_count_change,
+                'severity': severity,
+                'description': f"Row count changed by {row_count_change:.2f}%."
+            })
+        
+        # Extract schema changes
+        schema_changes = []
+        for change in comparison_results.get('schema_changes', []):
+            severity = 'High' if change.get('type') == 'column_removed' else 'Medium'
+            schema_changes.append({
+                'column': change.get('column', ''),
+                'type': change.get('type', ''),
+                'severity': severity,
+                'description': change.get('description', '')
+            })
+        
+        # Generate alerts for critical issues
+        alerts = []
+        # Add high severity statistical drifts to alerts
+        for drift in statistical_drifts:
+            if drift['severity'] == 'High':
+                alerts.append({
+                    'id': f"stat_{len(alerts)}",
+                    'title': f"Critical Statistical Drift in {drift['column']}",
+                    'type': 'Statistical Drift',
+                    'severity': 'Critical',
+                    'status': 'active',
+                    'column': drift['column'],
+                    'drift_score': drift['drift_score'],
+                    'description': drift['description'],
+                    'timestamp': datetime.now().isoformat()
+                })
+        
+        # Add high severity distribution drifts to alerts
+        for drift in distribution_drifts:
+            if drift['severity'] == 'High':
+                alerts.append({
+                    'id': f"dist_{len(alerts)}",
+                    'title': f"Critical Distribution Drift in {drift['column']}",
+                    'type': 'Distribution Drift',
+                    'severity': 'Critical',
+                    'status': 'active',
+                    'column': drift['column'],
+                    'drift_score': drift['drift_score'],
+                    'description': drift['description'],
+                    'timestamp': datetime.now().isoformat()
+                })
+        
+        # Add high severity volume anomalies to alerts
+        for anomaly in volume_anomalies:
+            if anomaly['severity'] == 'High':
+                alerts.append({
+                    'id': f"vol_{len(alerts)}",
+                    'title': f"Critical Volume Change in {anomaly['metric']}",
+                    'type': 'Volume Anomaly',
+                    'severity': 'Critical',
+                    'status': 'active',
+                    'description': anomaly['description'],
+                    'timestamp': datetime.now().isoformat()
+                })
+        
+        # Add schema changes to alerts
+        for change in schema_changes:
+            if change['severity'] == 'High':
+                alerts.append({
+                    'id': f"schema_{len(alerts)}",
+                    'title': f"Critical Schema Change: {change['type'].replace('_', ' ').title()}",
+                    'type': 'Schema Change',
+                    'severity': 'Critical',
+                    'status': 'active',
+                    'column': change.get('column', ''),
+                    'description': change['description'],
+                    'timestamp': datetime.now().isoformat()
+                })
+        
         analyzed_data = {
             'log_id': str(log_id),
             'new_filename': new_filename,
@@ -652,7 +767,12 @@ def run_analysis(new_filepath, historic_csv_filepath=None):
             'historic_shape': historic_df.shape,
             'new_stats': new_stats,
             'historic_stats': historic_stats,
-            'comparison_results': comparison_results
+            'comparison_results': comparison_results,
+            'statistical_drifts': statistical_drifts,
+            'distribution_drifts': distribution_drifts,
+            'volume_anomalies': volume_anomalies,
+            'schema_changes': schema_changes,
+            'alerts': alerts
         }
         
         # Log to database
