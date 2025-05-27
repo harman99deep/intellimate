@@ -1,5 +1,19 @@
 <!DOCTYPE html>
 <html lang="en">
+
+<header class="main-nav-container">
+    <nav class="main-nav">
+        <a href="{{ url_for('index') }}" class="nav-brand">
+            <span class="nav-icon">🛡️</span>
+            Data Drift Monitor
+        </a>
+        <div class="nav-links">
+            <a href="{{ url_for('index') }}" class="nav-link">Dashboard</a>
+            <a href="{{ url_for('list_db_tables_page') }}" class="nav-link">History</a>
+        </div>
+    </nav>
+</header>
+
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -9,12 +23,6 @@
     <link rel="icon" href="https://aionos.io/wp-content/uploads/2024/04/cropped-file-1-32x32.png">
 </head>
 <body>
-    <header class="main-nav-container">
-        <nav class="main-nav">
-            <a href="{{ url_for('index') }}">New Analysis</a>
-            <a href="{{ url_for('analysis_nav') }}">View Analysis Logs</a>
-        </nav>
-    </header>
 
     <main class="container page-container">
         <header class="page-header">
@@ -59,14 +67,15 @@
                     </button>
                 </div>
             </section>
-        {% elif logs %}
+        {% elif logs %} {# This is an elif, so the corresponding if/endif must be balanced #}
             <section class="logs-section">
                 <div class="logs-header">
                     <h2 class="section-title">
                         <span class="emoji">📊</span>
                         Recent Analysis Runs
-                        <span class="logs-count">({{ logs|length }} records)</span>
+                        <span class="logs-count">({{ logs|length }} records)</span> {# Around line 68 according to error #}
                     </h2>
+                    {# POTENTIALLY AN UNCLOSED IF WAS HERE OR JUST BEFORE THIS logs-header div #}
                 </div>
 
                 <div class="table-responsive-wrapper">
@@ -83,4 +92,267 @@
                                 <th scope="col">Current Dataset</th>
                                 <th scope="col">Historic Table</th>
                                 <th scope="col">Summary</th>
-                                <th scope="col">Actions</th
+                                <th scope="col">Actions</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for log_entry in logs %}
+                            <tr class="log-row" data-log-id="{{ log_entry.log_id }}" onclick="toggleDetails('{{ log_entry.log_id }}')">
+                                <td class="expand-cell"><span class="expand-icon">+</span></td>
+                                <td data-label="Log ID:"><a href="{{ url_for('view_overview', run_id=log_entry.log_id) }}">{{ log_entry.log_id|string|truncate(8, True, '') }}</a></td>
+                                <td data-label="Date & Time:">{{ log_entry.run_timestamp.strftime('%Y-%m-%d %H:%M:%S') if log_entry.run_timestamp else 'N/A' }}</td>
+                                <td data-label="Status:" class="status-{{ log_entry.status.lower().replace(' ', '-') if log_entry.status else 'unknown' }}">
+                                    <span class="status-badge">{{ log_entry.status|title if log_entry.status else 'Unknown' }}</span>
+                                </td>
+                                <td data-label="Current Dataset:">{{ log_entry.new_data_filename|truncate(30) if log_entry.new_data_filename else 'N/A' }}</td>
+                                <td data-label="Historic Table:">{{ log_entry.historic_table_name|truncate(30) if log_entry.historic_table_name else 'N/A' }}</td>
+                                <td data-label="Summary:">{{ log_entry.analysis_summary|truncate(60) if log_entry.analysis_summary else 'No summary' }}</td>
+                                <td data-label="Actions:">
+                                    <a href="{{ url_for('view_overview', run_id=log_entry.log_id) }}" class="btn btn-sm btn-primary">Details</a>
+                                </td>
+                            </tr>
+                            <tr class="details-row" id="details-{{ log_entry.log_id }}" style="display: none;">
+                                <td colspan="8">
+                                    <div class="details-content">
+                                        <h4>Full Details for Log ID: {{ log_entry.log_id }}</h4>
+                                        <p><strong>Status:</strong> {{ log_entry.status }}</p>
+                                        <p><strong>Full Summary:</strong> {{ log_entry.analysis_summary }}</p>
+                                        {% if log_entry.error_message %}
+                                            <p class="error-text"><strong>Error:</strong> {{ log_entry.error_message }}</p>
+                                        {% endif %}
+                                        {# You could potentially parse and display parts of log_entry.analysis_data here if needed #}
+                                    </div>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </section>
+        {% else %} {# This else corresponds to the `{% if error_message %}` #}
+            <section class="card no-logs-card">
+                <h2 class="card-title">
+                    <span class="emoji">📄</span>
+                    No Logs Found
+                </h2>
+                <p>There are no analysis logs recorded yet. Run a new analysis to see logs here.</p>
+                <a href="{{ url_for('index') }}" class="btn btn-primary">
+                    <span class="btn-icon">🔍</span>
+                    Run New Analysis
+                </a>
+            </section>
+        {% endif %} {# THIS IS THE ENDIF for `{% if error_message %}` #}
+
+    </main>
+
+    <footer class="page-footer">
+        <p>© {{ current_year }} Data Analysis Tool. Compare datasets against PostgreSQL baselines.</p>
+    </footer>
+
+    <script>
+        function toggleDetails(logId) {
+            const detailsRow = document.getElementById('details-' + logId);
+            const icon = document.querySelector(`.log-row[data-log-id="${logId}"] .expand-icon`);
+            if (detailsRow) {
+                if (detailsRow.style.display === 'none') {
+                    detailsRow.style.display = 'table-row';
+                    if(icon) icon.textContent = '-';
+                } else {
+                    detailsRow.style.display = 'none';
+                    if(icon) icon.textContent = '+';
+                }
+            }
+        }
+        function checkSystemHealth() {
+            fetch("{{ url_for('health_check') }}") // Assuming you have a health_check endpoint
+                .then(response => response.json())
+                .then(data => {
+                    alert(JSON.stringify(data, null, 2));
+                })
+                .catch(error => {
+                    alert('Health check failed: ' + error.message);
+                });
+        }
+    </script>
+    <style>
+        /* Basic styles for runs_list.html - can be moved to styles.css */
+        .page-container {
+            padding-bottom: 60px; /* Space for footer */
+        }
+        .page-header {
+            margin-bottom: 30px;
+            text-align: center;
+        }
+        .page-header h1 {
+            font-size: 2em;
+            color: var(--heading-color);
+            margin-bottom: 10px;
+        }
+        .subtitle {
+            font-size: 1.1em;
+            color: #6c757d;
+            max-width: 700px;
+            margin: 0 auto 20px auto;
+        }
+        .flashes {
+            list-style: none;
+            padding: 0;
+            margin-bottom: 20px;
+        }
+        .flashes li {
+            padding: 10px 15px;
+            border-radius: var(--border-radius-sm);
+            margin-bottom: 10px;
+        }
+        .flashes li.success { background-color: #d4edda; color: #155724; border: 1px solid #c3e6cb; }
+        .flashes li.error { background-color: #f8d7da; color: #721c24; border: 1px solid #f5c6cb; }
+        .flashes li.warning { background-color: #fff3cd; color: #856404; border: 1px solid #ffeeba; }
+        .flashes li.info { background-color: #d1ecf1; color: #0c5460; border: 1px solid #bee5eb; }
+
+        .error-card, .no-logs-card {
+            padding: 30px;
+            text-align: center;
+        }
+        .error-card .card-title, .no-logs-card .card-title {
+            font-size: 1.5em;
+            margin-bottom: 15px;
+        }
+        .error-help {
+            text-align: left;
+            max-width: 500px;
+            margin: 20px auto;
+            padding: 15px;
+            background-color: #f8f9fa;
+            border-radius: var(--border-radius-sm);
+        }
+        .error-help h4 { margin-top: 0; }
+        .error-actions { margin-top: 20px; }
+
+        .logs-section {
+            background-color: white;
+            padding: 20px;
+            border-radius: var(--border-radius-md);
+            box-shadow: var(--card-shadow);
+        }
+        .logs-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+            padding-bottom: 15px;
+            border-bottom: 1px solid var(--border-color);
+        }
+        .section-title .emoji { margin-right: 8px; }
+        .logs-count {
+            font-size: 0.9em;
+            color: #6c757d;
+        }
+        .table-responsive-wrapper {
+            overflow-x: auto;
+        }
+        .log-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 0.9em;
+        }
+        .log-table th, .log-table td {
+            padding: 10px 12px;
+            text-align: left;
+            border-bottom: 1px solid var(--border-color);
+            vertical-align: middle;
+        }
+        .log-table th {
+            background-color: #f8f9fa;
+            font-weight: 600;
+            white-space: nowrap;
+        }
+        .log-row { cursor: pointer; }
+        .log-row:hover { background-color: #f1f3f5; }
+        .expand-col { width: 30px; text-align: center; }
+        .expand-icon { font-weight: bold; color: var(--primary-color); }
+        .status-badge {
+            padding: 4px 8px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 500;
+            color: #212529;
+            display: inline-block;
+        }
+        .status-completed-with-issues { background-color: #f3dea0;} /* Orange for issues */
+        .status-success { background-color: #9bf0af; } /* Green for success */
+        .status-failed { background-color: #f8d7da; } /* Red for failed */
+        .status-unknown { background-color: #6c757d; } /* Grey for unknown */
+
+        .details-row td {
+            background-color: #f9f9f9;
+            padding: 0; /* Remove padding for the inner div to control it */
+        }
+        .details-content {
+            padding: 15px 20px;
+            border-left: 3px solid var(--primary-color);
+        }
+        .details-content h4 { margin-top: 0; color: var(--primary-color); }
+        .error-text { color: #dc3545; font-weight: 500; }
+
+        .btn-sm {
+            padding: 5px 10px;
+            font-size: 0.8em;
+        }
+        .page-footer {
+            text-align: center;
+            padding: 20px;
+            margin-top: 40px;
+            color: #6c757d;
+            font-size: 0.9em;
+            border-top: 1px solid var(--border-color);
+        }
+
+        /* Responsive table handling */
+        @media screen and (max-width: 768px) {
+            .log-table thead {
+                display: none; /* Hide table headers */
+            }
+            .log-table, .log-table tbody, .log-table tr, .log-table td {
+                display: block;
+                width: 100%;
+            }
+            .log-table tr {
+                margin-bottom: 15px;
+                border: 1px solid var(--border-color);
+                border-radius: var(--border-radius-sm);
+                overflow: hidden; /* Ensure rounded corners apply to content */
+            }
+            .log-table td {
+                text-align: right; /* Align content to the right */
+                padding-left: 50%; /* Create space for the label */
+                position: relative;
+                border-bottom: 1px dashed #eee;
+            }
+            .log-table td:last-child {
+                border-bottom: none;
+            }
+            .log-table td::before {
+                content: attr(data-label); /* Use data-label for the pseudo-element */
+                position: absolute;
+                left: 10px; /* Position label to the left */
+                width: calc(50% - 20px); /* Adjust width */
+                padding-right: 10px;
+                font-weight: bold;
+                text-align: left; /* Align label text to the left */
+                white-space: nowrap;
+            }
+            .expand-col, .expand-cell {
+                /* For responsive, we might want to handle expand differently or always show details */
+                text-align: left !important; /* Override for expand cell */
+                padding-left: 10px !important;
+            }
+            .expand-cell::before {
+                display: none; /* No label for expand cell */
+            }
+            .details-row td {
+                padding-left: 0 !important; /* Reset padding for details row */
+            }
+        }
+    </style>
+</body>
+</html>

@@ -19,7 +19,7 @@
             <p class="page-subtitle">Statistical changes in data distribution, mean, variance, and patterns</p>
         </div>
 
-        {% if results.data.statistical_drifts or results.data.distribution_drifts %}
+        {% if results.data and (results.data.statistical_drifts or results.data.distribution_drifts) %}
             
             <!-- Statistical Drift Section -->
             {% if results.data.statistical_drifts %}
@@ -32,13 +32,13 @@
                     
                     <div class="drift-grid">
                         {% for drift in results.data.statistical_drifts %}
-                            <div class="drift-card {{ drift.severity.lower() }}">
+                            <div class="drift-card {{ drift.severity.lower() if drift.severity else 'low' }}">
                                 <div class="drift-header">
                                     <div class="drift-info">
                                         <h3 class="drift-column">{{ drift.column }}</h3>
                                         <span class="drift-type">{{ drift.type.replace('_', ' ').title() }}</span>
                                     </div>
-                                    <span class="severity-badge {{ drift.severity.lower() }}">{{ drift.severity }}</span>
+                                    <span class="severity-badge {{ drift.severity.lower() if drift.severity else 'low' }}">{{ drift.severity if drift.severity else 'Low' }}</span>
                                 </div>
                                 
                                 <div class="drift-content">
@@ -47,25 +47,29 @@
                                     <div class="drift-metrics">
                                         <div class="metric-row">
                                             <span class="metric-label">Baseline Value:</span>
-                                            <span class="metric-value">{{ "%.2f"|format(drift.baseline_value) }}</span>
+                                            <span class="metric-value">{{ "%.2f"|format(drift.baseline_value) if drift.baseline_value is not none else 'N/A' }}</span>
                                         </div>
                                         <div class="metric-row">
                                             <span class="metric-label">Current Value:</span>
-                                            <span class="metric-value">{{ "%.2f"|format(drift.current_value) }}</span>
+                                            <span class="metric-value">{{ "%.2f"|format(drift.current_value) if drift.current_value is not none else 'N/A' }}</span>
                                         </div>
+                                        {% if drift.change_percentage is not none %}
                                         <div class="metric-row">
                                             <span class="metric-label">Change:</span>
                                             <span class="metric-value change-highlight">{{ "%.1f"|format(drift.change_percentage) }}%</span>
                                         </div>
+                                        {% endif %}
                                     </div>
                                     
+                                    {% if drift.drift_score is not none %}
                                     <div class="drift-score">
                                         <div class="score-bar">
-                                            <div class="score-fill {{ drift.severity.lower() }}" 
-                                                 style="width: {{ (drift.drift_score * 100)|min(100) }}%"></div>
+                                            <div class="score-fill {{ drift.severity.lower() if drift.severity else 'low' }}" 
+                                                 style="width: {{ [drift.drift_score * 100, 100]|min|int }}%"></div> {# CORRECTED HERE #}
                                         </div>
                                         <span class="score-text">Drift Score: {{ "%.3f"|format(drift.drift_score) }}</span>
                                     </div>
+                                    {% endif %}
                                 </div>
                             </div>
                         {% endfor %}
@@ -92,23 +96,26 @@
 
                     <div class="drift-grid">
                         {% for drift in results.data.distribution_drifts %}
-                            <div class="drift-card {{ drift.severity.lower() }}">
+                            <div class="drift-card {{ drift.severity.lower() if drift.severity else 'low' }}">
                                 <div class="drift-header">
                                     <div class="drift-info">
                                         <h3 class="drift-column">{{ drift.column }}</h3>
                                         <span class="drift-type">{{ drift.type.replace('_', ' ').title() }}</span>
                                     </div>
-                                    <span class="severity-badge {{ drift.severity.lower() }}">{{ drift.severity }}</span>
+                                    <span class="severity-badge {{ drift.severity.lower() if drift.severity else 'low' }}">{{ drift.severity if drift.severity else 'Low' }}</span>
                                 </div>
                                 
                                 <div class="drift-content">
                                     <p class="drift-description">{{ drift.description }}</p>
                                     
                                     <div class="drift-metrics">
+                                        {% if drift.test_statistic is not none %}
                                         <div class="metric-row">
                                             <span class="metric-label">Test Statistic:</span>
                                             <span class="metric-value">{{ "%.4f"|format(drift.test_statistic) }}</span>
                                         </div>
+                                        {% endif %}
+                                        {% if drift.p_value is not none %}
                                         <div class="metric-row">
                                             <span class="metric-label">P-Value:</span>
                                             <span class="metric-value">{{ "%.4f"|format(drift.p_value) }}</span>
@@ -117,15 +124,18 @@
                                             <span class="metric-label">Significance:</span>
                                             <span class="metric-value significance">{{ "Significant" if drift.p_value < 0.05 else "Not Significant" }}</span>
                                         </div>
+                                        {% endif %}
                                     </div>
                                     
+                                    {% if drift.drift_score is not none %} {# Assuming KS Statistic is also a drift_score #}
                                     <div class="drift-score">
                                         <div class="score-bar">
-                                            <div class="score-fill {{ drift.severity.lower() }}" 
-                                                 style="width: {{ (drift.drift_score * 100)|min(100) }}%"></div>
+                                            <div class="score-fill {{ drift.severity.lower() if drift.severity else 'low' }}" 
+                                                 style="width: {{ [drift.drift_score * 100, 100]|min|int }}%"></div> {# CORRECTED HERE #}
                                         </div>
                                         <span class="score-text">KS Statistic: {{ "%.3f"|format(drift.drift_score) }}</span>
                                     </div>
+                                    {% endif %}
                                 </div>
                             </div>
                         {% endfor %}
@@ -140,22 +150,24 @@
                     Drift Analysis Summary
                 </h2>
                 
+                {# Ensure data_drift is available; it was passed from main.py #}
+                {% set all_drifts = (data_drift.statistical_drifts if data_drift.statistical_drifts else []) + (data_drift.distribution_drifts if data_drift.distribution_drifts else []) %}
                 <div class="summary-stats">
                     <div class="summary-grid">
                         <div class="summary-item">
-                            <div class="summary-value">{{ data_drift.statistical_drifts|length + data_drift.distribution_drifts|length }}</div>
+                            <div class="summary-value">{{ all_drifts|length }}</div>
                             <div class="summary-label">Total Drifts Detected</div>
                         </div>
                         <div class="summary-item">
-                            <div class="summary-value critical">{{ (data_drift.statistical_drifts + data_drift.distribution_drifts)|selectattr("severity", "equalto", "Critical")|list|length }}</div>
+                            <div class="summary-value critical">{{ all_drifts|selectattr("severity", "equalto", "Critical")|list|length }}</div>
                             <div class="summary-label">Critical Drifts</div>
                         </div>
                         <div class="summary-item">
-                            <div class="summary-value medium">{{ (data_drift.statistical_drifts + data_drift.distribution_drifts)|selectattr("severity", "equalto", "Medium")|list|length }}</div>
+                            <div class="summary-value medium">{{ all_drifts|selectattr("severity", "equalto", "Medium")|list|length }}</div>
                             <div class="summary-label">Medium Drifts</div>
                         </div>
                         <div class="summary-item">
-                            <div class="summary-value low">{{ (data_drift.statistical_drifts + data_drift.distribution_drifts)|selectattr("severity", "equalto", "Low")|list|length }}</div>
+                            <div class="summary-value low">{{ all_drifts|selectattr("severity", "equalto", "Low")|list|length }}</div>
                             <div class="summary-label">Low Drifts</div>
                         </div>
                     </div>
@@ -164,22 +176,22 @@
                 <div class="recommendations">
                     <h3>Recommendations</h3>
                     <ul class="recommendation-list">
-                        {% if (data_drift.statistical_drifts + data_drift.distribution_drifts)|selectattr("severity", "equalto", "Critical")|list|length > 0 %}
+                        {% if all_drifts|selectattr("severity", "equalto", "Critical")|list|length > 0 %}
                             <li class="recommendation critical">
                                 <strong>Immediate Action Required:</strong> Critical drift detected. Review data pipeline and investigate root causes.
                             </li>
                         {% endif %}
-                        {% if data_drift.statistical_drifts|selectattr("type", "equalto", "mean_drift")|list|length > 0 %}
+                        {% if data_drift.statistical_drifts and data_drift.statistical_drifts|selectattr("type", "equalto", "mean_drift")|list|length > 0 %}
                             <li class="recommendation">
                                 Mean drift detected - check for changes in data sources or processing logic.
                             </li>
                         {% endif %}
-                        {% if data_drift.statistical_drifts|selectattr("type", "equalto", "variance_drift")|list|length > 0 %}
+                        {% if data_drift.statistical_drifts and data_drift.statistical_drifts|selectattr("type", "equalto", "variance_drift")|list|length > 0 %}
                             <li class="recommendation">
                                 Variance drift detected - data quality or collection process may have changed.
                             </li>
                         {% endif %}
-                        {% if data_drift.distribution_drifts|length > 0 %}
+                        {% if data_drift.distribution_drifts and data_drift.distribution_drifts|length > 0 %}
                             <li class="recommendation">
                                 Distribution drift detected - underlying data generation process may have shifted.
                             </li>
@@ -214,7 +226,7 @@
 
         <!-- Navigation Actions -->
         <div class="page-actions">
-            <a href="{{ url_for('view_results', run_id=run_id) }}" class="btn btn-outline">
+            <a href="{{ url_for('view_overview', run_id=run_id) }}" class="btn btn-outline">
                 <span class="btn-icon">📊</span>
                 Back to Overview
             </a>
@@ -237,20 +249,14 @@
             border-radius: var(--border-radius-md);
             box-shadow: var(--card-shadow);
             overflow: hidden;
-            border-left: 4px solid #e9ecef;
+            border-left: 4px solid #e9ecef; /* Default border */
         }
 
-        .drift-card.critical {
-            border-left-color: #dc3545;
-        }
+        .drift-card.critical { border-left-color: #dc3545; }
+        .drift-card.medium { border-left-color: #ffc107; }
+        .drift-card.low { border-left-color: #28a745; }
+        .drift-card.unknown { border-left-color: #6c757d; }
 
-        .drift-card.medium {
-            border-left-color: #ffc107;
-        }
-
-        .drift-card.low {
-            border-left-color: #28a745;
-        }
 
         .drift-header {
             display: flex;
@@ -280,20 +286,11 @@
             text-transform: uppercase;
         }
 
-        .severity-badge.critical {
-            background-color: #dc3545;
-            color: white;
-        }
+        .severity-badge.critical { background-color: #dc3545; color: white; }
+        .severity-badge.medium { background-color: #ffc107; color: #000; }
+        .severity-badge.low { background-color: #28a745; color: white; }
+        .severity-badge.unknown { background-color: #6c757d; color: white; }
 
-        .severity-badge.medium {
-            background-color: #ffc107;
-            color: #000;
-        }
-
-        .severity-badge.low {
-            background-color: #28a745;
-            color: white;
-        }
 
         .drift-content {
             padding: 20px;
@@ -333,13 +330,15 @@
         }
 
         .change-highlight {
-            color: #dc3545;
+            color: #dc3545; /* Or dynamically set based on positive/negative change */
         }
 
         .significance {
-            color: #dc3545;
             font-weight: 600;
         }
+        .significance.significant { color: #dc3545; } /* If p_value < 0.05 */
+        .significance.not-significant { color: #28a745; }
+
 
         .drift-score {
             text-align: center;
@@ -359,17 +358,11 @@
             transition: width 0.3s ease;
         }
 
-        .score-fill.critical {
-            background-color: #dc3545;
-        }
+        .score-fill.critical { background-color: #dc3545; }
+        .score-fill.medium { background-color: #ffc107; }
+        .score-fill.low { background-color: #28a745; }
+        .score-fill.unknown { background-color: #6c757d; }
 
-        .score-fill.medium {
-            background-color: #ffc107;
-        }
-
-        .score-fill.low {
-            background-color: #28a745;
-        }
 
         .score-text {
             font-size: 0.9em;
@@ -377,16 +370,16 @@
         }
 
         .distribution-info {
-            background-color: #e3f2fd;
+            background-color: #e3f2fd; /* Light blue */
             padding: 15px;
             border-radius: var(--border-radius-sm);
             margin-bottom: 20px;
-            border-left: 4px solid #2196f3;
+            border-left: 4px solid #2196f3; /* Blue accent */
         }
 
         .info-text {
             margin: 0;
-            color: #1565c0;
+            color: #1565c0; /* Darker blue text */
         }
 
         .drift-summary {
@@ -416,17 +409,10 @@
             margin-bottom: 5px;
         }
 
-        .summary-value.critical {
-            color: #dc3545;
-        }
-
-        .summary-value.medium {
-            color: #ffc107;
-        }
-
-        .summary-value.low {
-            color: #28a745;
-        }
+        .summary-value.critical { color: #dc3545; }
+        .summary-value.medium { color: #ffc107; }
+        .summary-value.low { color: #28a745; }
+        /* Default color for total, or use var(--primary-color) */
 
         .summary-label {
             color: #6c757d;
@@ -468,7 +454,7 @@
         }
 
         .no-issues h2 {
-            color: #28a745;
+            color: #28a745; /* Green for no issues */
             margin-bottom: 15px;
         }
 
@@ -532,4 +518,3 @@
     </script>
 </body>
 </html>
-                                

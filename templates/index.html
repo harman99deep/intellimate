@@ -4,724 +4,910 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="description" content="Upload new CSV data for analysis against PostgreSQL historical baseline.">
-    <title>Data Analysis Tool - Compare with Historic Baseline</title>
+    <title>Data Analysis Dashboard - {{ historic_table_name or "Setup" }}</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='styles.css') }}">
     <link rel="icon" href="https://aionos.io/wp-content/uploads/2024/04/cropped-file-1-32x32.png">
+    <!-- Consider adding a modern CSS reset or a lightweight framework if not already using one -->
 </head>
 <body>
     <header class="main-nav-container">
         <nav class="main-nav">
-            <a href="{{ url_for('index') }}">New Analysis</a>
-            <a href="{{ url_for('analysis_nav') }}">View Analysis Logs</a>
+            <a href="{{ url_for('index') }}" class="nav-brand">
+                 <span class="nav-icon">🛡️</span> Data Drift Monitor
+            </a>
+            <div class="nav-links">
+                <a href="{{ url_for('index') }}" class="nav-link active">New Analysis</a>
+                <a href="{{ url_for('list_db_tables_page') }}" class="nav-link">Analysis History</a>
+            </div>
         </nav>
     </header>
 
-    <main class="container">
-        <h1>Data Analysis Tool</h1>
-        <p class="subtitle">Upload a CSV dataset for comparison against the PostgreSQL historical baseline to detect changes and anomalies.</p>
+    <main class="container dashboard-container">
+        <div class="dashboard-header">
+            <h1>Welcome to Data Analysis</h1>
+            <p class="subtitle">Configure your baseline, upload new data, and detect critical changes.</p>
+        </div>
 
         {% with messages = get_flashed_messages(with_categories=true) %}
           {% if messages %}
-            <ul class="flashes" role="alert">
+            <div class="flashes-container" role="alert">
             {% for category, message in messages %}
-              <li class="{{ category }}">{{ message }}</li>
+              <div class="flash-message {{ category }}">{{ message }}</div>
             {% endfor %}
-            </ul>
+            </div>
           {% endif %}
         {% endwith %}
 
-        <!-- Historic Table Configuration Section -->
-        <section class="historic-table-section card">
-            <h2 class="card-title">
-                <span class="emoji">🗄️</span>
-                Historic Baseline Configuration
-            </h2>
-            <p>Configure the PostgreSQL table to use as your historical baseline for comparison.</p>
-            
-            <form method="post" action="{{ url_for('set_historic_table') }}" id="historic-table-form">
-                <div class="form-group">
-                    <label for="historic_table_name">Historic Table Name:</label>
-                    <div class="input-group">
-                        <input
-                            type="text"
-                            name="historic_table_name"
-                            id="historic_table_name"
-                            required
-                            value="{{ historic_table_name }}"
-                            placeholder="Enter table name (e.g., historical_data)"
-                            aria-describedby="historic-table-help"
-                        />
-                        <button type="submit" class="btn btn-primary" id="table-button">
-                            <span class="btn-icon">💾</span>
-                            Set Table
+        <div class="dashboard-main-grid">
+            <!-- Column 1: Configuration & Info -->
+            <div class="dashboard-column">
+                <section class="config-section card modern-card">
+                    <h2 class="card-title">
+                        <span class="emoji">🗄️</span>
+                        Baseline Configuration
+                    </h2>
+                    <p class="card-subtitle">Set your PostgreSQL table as the historical baseline.</p>
+                    
+                    <form method="post" action="{{ url_for('set_historic_table') }}" id="historic-table-form">
+                        <div class="form-group">
+                            <label for="historic_table_name" class="sr-only">Historic Table Name:</label>
+                            <div class="input-group modern-input-group">
+                                <span class="input-group-icon">📜</span>
+                                <input
+                                    type="text"
+                                    name="historic_table_name"
+                                    id="historic_table_name"
+                                    required
+                                    value="{{ historic_table_name }}"
+                                    placeholder="e.g., historical_sales_data"
+                                    aria-describedby="historic-table-help"
+                                />
+                                <button type="submit" class="btn btn-primary" id="table-button">
+                                    Set
+                                </button>
+                            </div>
+                            <small id="historic-table-help" class="form-text">
+                                Name of the PostgreSQL table for baseline data.
+                            </small>
+                        </div>
+                    </form>
+
+                    {% if historic_table_name %}
+                    <div class="current-config-display">
+                        <div class="config-status">
+                            <span class="status-icon success">✓</span>
+                            <span>Baseline: <strong>{{ historic_table_name }}</strong> (Configured)</span>
+                        </div>
+                        <button type="button" class="btn btn-outline btn-sm btn-block" onclick="checkTableInfo()">
+                            <span class="btn-icon">🔍</span>
+                            Verify Table Details
                         </button>
                     </div>
-                    <small id="historic-table-help" class="form-text">
-                        Enter the name of the PostgreSQL table containing your historical baseline data.
-                    </small>
-                </div>
-            </form>
-
-            <!-- Current Configuration Display -->
-            {% if historic_table_name %}
-            <div class="current-config">
-                <h4>Current Configuration:</h4>
-                <div class="config-details">
-                    <span class="config-label">Historic Table:</span>
-                    <span class="config-value">{{ historic_table_name }}</span>
-                    <span class="status-indicator">✓ Configured</span>
-                </div>
-                
-                <div class="config-actions">
-                    <button type="button" class="btn btn-outline btn-sm" onclick="checkTableInfo()">
-                        <span class="btn-icon">🔍</span>
-                        Verify Table
-                    </button>
-                </div>
-            </div>
-            {% else %}
-            <div class="config-warning">
-                <span class="warning-icon">⚠️</span>
-                <span>No historic table configured. Please set a table name before running analysis.</span>
-            </div>
-            {% endif %}
-
-            <!-- Table Browser (Hidden by default) -->
-            <div id="table-browser" class="table-browser" style="display: none;">
-                <h4>Available Tables:</h4>
-                <div id="tables-list">Loading...</div>
-            </div>
-
-            <!-- Table Info Display (Hidden by default) -->
-            <div id="table-info" class="table-info" style="display: none;">
-                <h4>Table Information:</h4>
-                <div id="table-details">Loading...</div>
-            </div>
-        </section>
-
-        <!-- Data Upload Section -->
-        <section class="upload-section card">
-            <h2 class="card-title">
-                <span class="emoji">📊</span>
-                Data Upload
-            </h2>
-            <p class="section-description">Upload your current dataset to compare against the historic baseline and identify changes, anomalies, and data quality issues.</p>
-
-            <form method="post" action="{{ url_for('analyze_data') }}" enctype="multipart/form-data" id="upload-form">
-                <div class="upload-container">
-                    <div class="upload-area" id="upload-drop-area">
-                        <div class="upload-icon-container">
-                            <svg class="upload-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="64" height="64">
-                                <path fill="none" d="M0 0h24v24H0z"/>
-                                <path d="M12 12.586l4.243 4.242-1.415 1.415L13 16.415V22h-2v-5.587l-1.828 1.83-1.415-1.415L12 12.586zM12 2a7.001 7.001 0 0 1 6.954 6.194 5.5 5.5 0 0 1-.953 10.784v-2.014a3.5 3.5 0 1 0-1.112-6.91 5 5 0 1 0-9.777 0 3.5 3.5 0 0 0-1.292 6.88l.18.03v2.014a5.5 5.5 0 0 1-.954-10.784A7 7 0 0 1 12 2z"/>
-                            </svg>
-                        </div>
-                        <div class="upload-text">
-                            <h3>Drag & Drop Your CSV File Here</h3>
-                            <p>or</p>
-                            <label for="new_file" class="browse-button">Browse Files</label>
-                            <p class="file-requirements">CSV format only. Maximum size: {{ max_file_upload_mb }}MB</p>
-                        </div>
-                        <input type="file" 
-                               name="new_file" 
-                               id="new_file" 
-                               accept=".csv" 
-                               required>
+                    {% else %}
+                    <div class="config-warning-display">
+                        <span class="status-icon warning">⚠️</span>
+                        <span>No historic baseline table configured.</span>
                     </div>
+                    {% endif %}
                     
-                    <div id="file-preview" class="file-preview" style="display: none;">
-                        <div class="file-preview-header">
-                            <h4>Selected File</h4>
-                            <button type="button" class="remove-file" onclick="removeFile()">×</button>
-                        </div>
-                        <div class="file-preview-content"></div>
-                    </div>
-                </div>
-
-                <div class="action-container">
-                    <div class="analysis-options">
-                        <div class="option-label">Analysis Type:</div>
-                        <div class="option-group">
-                            <label class="option-item active">
-                                <input type="radio" name="analysis_type" value="comprehensive" checked>
-                                <span class="option-icon">🔍</span>
-                                <span class="option-text">Comprehensive</span>
-                            </label>
-                            <label class="option-item">
-                                <input type="radio" name="analysis_type" value="quick">
-                                <span class="option-icon">⚡</span>
-                                <span class="option-text">Quick Scan</span>
-                            </label>
+                    <!-- Table Info Display (Hidden by default, could be a modal) -->
+                    <div id="table-info-modal" class="modal" style="display: none;">
+                        <div class="modal-content">
+                            <span class="close-button" onclick="closeModal('table-info-modal')">×</span>
+                            <h4>Table Information: <span id="modal-table-name"></span></h4>
+                            <div id="table-details">Loading...</div>
                         </div>
                     </div>
-                    
-                    <button type="submit" class="submit-button" id="analyze-button">
-                        <span class="btn-icon">📊</span>
-                        <span id="button-text">Analyze Dataset</span>
-                        <span id="loading-spinner" class="spinner" style="display: none;"></span>
-                    </button>
-                </div>
-            </form>
-        </section>
+                </section>
 
-        <!-- Quick Actions -->
-        <section class="quick-actions card">
-            <h3 class="card-title">
-                <span class="emoji">⚡</span>
-                Quick Actions
-            </h3>
-            <div class="action-buttons">
-                <a href="{{ url_for('analysis_nav') }}" class="btn btn-outline">
-                    <span class="btn-icon">📋</span>
-                    View Analysis History
-                </a>
-                <button type="button" class="btn btn-outline" onclick="checkSystemHealth()">
-                    <span class="btn-icon">🔍</span>
-                    System Health Check
-                </button>
+                <section class="quick-actions-section card modern-card">
+                    <h3 class="card-title">
+                        <span class="emoji">⚡</span>
+                        System Utilities
+                    </h3>
+                    <div class="action-buttons-vertical">
+                        <button type="button" class="btn btn-secondary btn-block" onclick="checkSystemHealth()">
+                            <span class="btn-icon">🩺</span>
+                            System Health Check
+                        </button>
+                        <button type="button" class="btn btn-secondary btn-block" onclick="loadTableList()">
+                            <span class="btn-icon">📋</span>
+                             Browse DB Tables
+                        </button>
+                    </div>
+                     <!-- Table Browser Modal -->
+                    <div id="table-browser-modal" class="modal" style="display: none;">
+                        <div class="modal-content">
+                            <span class="close-button" onclick="closeModal('table-browser-modal')">×</span>
+                            <h4>Available Database Tables</h4>
+                            <div id="tables-list-modal">Loading...</div>
+                        </div>
+                    </div>
+                </section>
             </div>
-        </section>
+
+            <!-- Column 2: Data Upload & Analysis -->
+            <div class="dashboard-column">
+                <section class="upload-analysis-section card modern-card primary-action-card">
+                    <h2 class="card-title">
+                        <span class="emoji">🚀</span>
+                        Start New Analysis
+                    </h2>
+                    <p class="card-subtitle">Upload your current CSV dataset for comparison.</p>
+
+                    <form method="post" action="{{ url_for('analyze_data') }}" enctype="multipart/form-data" id="upload-form">
+                        <div class="upload-area-container" id="upload-drop-area-wrapper">
+                            <div class="upload-area compact-upload-area" id="upload-drop-area">
+                                <input type="file" name="new_file" id="new_file" accept=".csv" required class="file-input-hidden">
+                                <div class="upload-icon-display">
+                                    <svg class="upload-svg-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM14 13v4h-4v-4H7l5-5 5 5h-3z"/></svg>
+                                </div>
+                                <p class="upload-prompt-text"><strong>Drag & Drop CSV</strong> or <label for="new_file" class="browse-link">click to browse</label></p>
+                                <p class="upload-requirements-text">Max: {{ max_file_upload_mb }}MB</p>
+                            </div>
+                            <div id="file-preview-compact" class="file-preview-compact" style="display: none;">
+                                <span class="file-icon-preview">📄</span>
+                                <span class="file-name-preview"></span>
+                                <span class="file-size-preview"></span>
+                                <button type="button" class="remove-file-compact" onclick="removeFile()">×</button>
+                            </div>
+                        </div>
+                        
+                        <div class="analysis-options-group">
+                            <label class="option-label-title">Analysis Type:</label>
+                            <div class="radio-button-group">
+                                <label class="radio-option-item active">
+                                    <input type="radio" name="analysis_type" value="comprehensive" checked>
+                                    <span class="radio-text">Comprehensive</span>
+                                </label>
+                                <label class="radio-option-item">
+                                    <input type="radio" name="analysis_type" value="quick">
+                                    <span class="radio-text">Quick Scan</span>
+                                </label>
+                            </div>
+                        </div>
+                        
+                        <button type="submit" class="btn btn-primary btn-xl btn-block" id="analyze-button">
+                            <span id="button-text">Analyze Dataset</span>
+                            <span id="loading-spinner" class="spinner" style="display: none;"></span>
+                        </button>
+                    </form>
+                </section>
+            </div>
+        </div>
     </main>
 
-    <footer class="page-footer">
-        <p>© {{ current_year }} Data Analysis Tool. Compare datasets against PostgreSQL baselines.</p>
+    <footer class="page-footer compact-footer">
+        <p>© {{ current_year }} Data Analysis Tool by AIONOS.IO</p>
     </footer>
 
-    <script>
-        document.addEventListener('DOMContentLoaded', function() {
-            const fileInput = document.getElementById('new_file');
-            const filePreview = document.getElementById('file-preview');
-            const filePreviewContent = document.querySelector('.file-preview-content');
-            const uploadForm = document.getElementById('upload-form');
-            const analyzeButton = document.getElementById('analyze-button');
-            const buttonText = document.getElementById('button-text');
-            const loadingSpinner = document.getElementById('loading-spinner');
-            const uploadArea = document.getElementById('upload-drop-area');
-            const optionItems = document.querySelectorAll('.option-item');
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    const fileInput = document.getElementById('new_file');
+    const uploadDropArea = document.getElementById('upload-drop-area');
+    const filePreviewCompact = document.getElementById('file-preview-compact');
+    const fileNamePreview = filePreviewCompact.querySelector('.file-name-preview');
+    const fileSizePreview = filePreviewCompact.querySelector('.file-size-preview');
+    const uploadForm = document.getElementById('upload-form');
+    const analyzeButton = document.getElementById('analyze-button');
+    const buttonText = document.getElementById('button-text');
+    const loadingSpinner = document.getElementById('loading-spinner');
+    const radioOptionItems = document.querySelectorAll('.radio-option-item');
 
-            // Option selection handling
-            if (optionItems.length) {
-                optionItems.forEach(item => {
-                    item.addEventListener('click', function() {
-                        // Remove active class from all options
-                        optionItems.forEach(opt => opt.classList.remove('active'));
-                        // Add active class to clicked option
-                        this.classList.add('active');
-                        // Check the radio button
-                        const radio = this.querySelector('input[type="radio"]');
-                        if (radio) radio.checked = true;
-                    });
-                });
+    radioOptionItems.forEach(item => {
+        item.addEventListener('click', function(e) {
+            if (e.target.tagName !== 'INPUT') { // Ensure click on label also checks radio
+                 const radio = this.querySelector('input[type="radio"]');
+                 if (radio) radio.checked = true;
             }
+            radioOptionItems.forEach(opt => opt.classList.remove('active'));
+            this.classList.add('active');
+        });
+        // Initial active state based on checked
+        if (item.querySelector('input[type="radio"]').checked) {
+            item.classList.add('active');
+        }
+    });
 
-            // File selection handling
-            if (fileInput) {
-                fileInput.addEventListener('change', function() {
-                    if (fileInput.files.length > 0) {
-                        const file = fileInput.files[0];
-                        displayFilePreview(file);
-                    } else {
-                        filePreview.style.display = 'none';
-                    }
-                });
-            }
-
-            function displayFilePreview(file) {
-                // Create file info HTML
-                filePreviewContent.innerHTML = `
-                    <div class="file-info">
-                        <span class="file-name">📄 ${file.name}</span>
-                        <span class="file-size">${formatFileSize(file.size)}</span>
-                    </div>
-                `;
-                filePreview.style.display = 'block';
-                // Hide the upload area or make it less prominent
-                uploadArea.style.opacity = '0.6';
-            }
-            
-            // Function to remove selected file
-            window.removeFile = function() {
-                // Clear the file input
-                fileInput.value = '';
-                // Hide the file preview
-                filePreview.style.display = 'none';
-                // Restore the upload area
-                uploadArea.style.opacity = '1';
-            }
-
-            // Form submission handling
-            if (uploadForm) {
-                uploadForm.addEventListener('submit', function() {
-                    if (!fileInput.files.length) {
-                        alert('Please select a CSV file to upload.');
-                        return false;
-                    }
-
-                    // Check if historic table is configured
-                    const historicTable = '{{ historic_table_name }}';
-                    if (!historicTable) {
-                        alert('Please configure a historic table before running analysis.');
-                        return false;
-                    }
-
-                    // Show loading state
-                    analyzeButton.disabled = true;
-                    buttonText.textContent = 'Analyzing Dataset...';
-                    loadingSpinner.style.display = 'inline-block';
-                    
-                    return true;
-                });
-            }
-
-            // Drag and drop handling
-            if (uploadArea) {
-                ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
-                    uploadArea.addEventListener(eventName, preventDefaults, false);
-                });
-
-                function preventDefaults(e) {
-                    e.preventDefault();
-                    e.stopPropagation();
-                }
-
-                ['dragenter', 'dragover'].forEach(eventName => {
-                    uploadArea.addEventListener(eventName, () => {
-                        uploadArea.classList.add('drag-over');
-                    }, false);
-                });
-
-                ['dragleave', 'drop'].forEach(eventName => {
-                    uploadArea.addEventListener(eventName, () => {
-                        uploadArea.classList.remove('drag-over');
-                    }, false);
-                });
-
-                uploadArea.addEventListener('drop', function(e) {
-                    const files = e.dataTransfer.files;
-                    if (files.length > 0) {
-                        const file = files[0];
-                        if (file.name.toLowerCase().endsWith('.csv')) {
-                            fileInput.files = files;
-                            fileInput.dispatchEvent(new Event('change'));
-                        } else {
-                            alert('Only CSV files are allowed.');
-                        }
-                    }
-                });
-            }
-
-            function formatFileSize(bytes) {
-                if (bytes === 0) return '0 Bytes';
-                const k = 1024;
-                const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-                const i = Math.floor(Math.log(bytes) / Math.log(k));
-                return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    if (fileInput) {
+        fileInput.addEventListener('change', function() {
+            if (fileInput.files.length > 0) {
+                handleFile(fileInput.files[0]);
             }
         });
+    }
 
-        // Table management functions
-        function loadTableList() {
-            const tableBrowser = document.getElementById('table-browser');
-            const tablesList = document.getElementById('tables-list');
-            
-            tableBrowser.style.display = 'block';
-            tablesList.innerHTML = 'Loading tables...';
-            
-            fetch('/api/db_tables')
-                .then(response => response.json())
-                .then(data => {
-                    if (data.status === 'ok') {
-                        if (data.tables.length === 0) {
-                            tablesList.innerHTML = `<p class="error">Error loading tables: ${data.message}</p>`;
-                    }
-                }})
-                .catch(error => {
-                    tablesList.innerHTML = `<p class="error">Failed to load tables: ${error.message}</p>`;
-                });
-        }
+    function handleFile(file) {
+        fileNamePreview.textContent = file.name;
+        fileSizePreview.textContent = formatFileSize(file.size);
+        filePreviewCompact.style.display = 'flex';
+        uploadDropArea.style.display = 'none'; // Hide drag area
+    }
 
-        function selectTable(tableName) {
-            document.getElementById('historic_table_name').value = tableName;
-            document.getElementById('table-browser').style.display = 'none';
-        }
+    window.removeFile = function() {
+        fileInput.value = ''; // Clear the file input
+        filePreviewCompact.style.display = 'none';
+        uploadDropArea.style.display = 'flex'; // Show drag area
+    }
 
-        function checkTableInfo() {
-            const tableName = document.getElementById('historic_table_name').value;
-            if (!tableName) {
-                alert('Please enter a table name first.');
+    if (uploadForm) {
+        uploadForm.addEventListener('submit', function(e) {
+            if (!fileInput.files.length && !filePreviewCompact.style.display !== 'none') {
+                alert('Please select a CSV file to upload.');
+                e.preventDefault();
                 return;
             }
+            const historicTable = "{{ historic_table_name }}";
+            if (!historicTable) {
+                alert('Please configure a historic baseline table first.');
+                e.preventDefault();
+                return;
+            }
+            analyzeButton.disabled = true;
+            buttonText.style.display = 'none';
+            loadingSpinner.style.display = 'inline-block';
+        });
+    }
 
-            const tableInfo = document.getElementById('table-info');
-            const tableDetails = document.getElementById('table-details');
-            
-            tableInfo.style.display = 'block';
-            tableDetails.innerHTML = 'Loading table information...';
-            
-            fetch(`/api/table_info/${encodeURIComponent(tableName)}`)
-                .then(response => response.json())
-                .then(data => {
-                    if (data.status === 'ok') {
-                        let html = `
-                            <div class="table-stats">
-                                <div class="stat-item">
-                                    <span class="stat-label">Table Name:</span>
-                                    <span class="stat-value">${data.table_name}</span>
-                                </div>
-                                <div class="stat-item">
-                                    <span class="stat-label">Rows:</span>
-                                    <span class="stat-value">${data.row_count.toLocaleString()}</span>
-                                </div>
-                                <div class="stat-item">
-                                    <span class="stat-label">Columns:</span>
-                                    <span class="stat-value">${data.column_count}</span>
-                                </div>
+    // Drag and drop
+    if (uploadDropArea) {
+        ['dragenter', 'dragover', 'dragleave', 'drop'].forEach(eventName => {
+            uploadDropArea.addEventListener(eventName, preventDefaults, false);
+            document.body.addEventListener(eventName, preventDefaults, false); // Prevent browser default for whole page
+        });
+        ['dragenter', 'dragover'].forEach(eventName => {
+            uploadDropArea.addEventListener(eventName, () => uploadDropArea.classList.add('drag-over'), false);
+        });
+        ['dragleave', 'drop'].forEach(eventName => {
+            uploadDropArea.addEventListener(eventName, () => uploadDropArea.classList.remove('drag-over'), false);
+        });
+        uploadDropArea.addEventListener('drop', function(e) {
+            const dt = e.dataTransfer;
+            const files = dt.files;
+            if (files.length > 0) {
+                if (files[0].name.toLowerCase().endsWith('.csv')) {
+                    fileInput.files = files; // Assign files to input
+                    handleFile(files[0]); // Update preview
+                } else {
+                    alert('Only CSV files are allowed.');
+                }
+            }
+        }, false);
+    }
+    function preventDefaults(e) {
+        e.preventDefault();
+        e.stopPropagation();
+    }
+    function formatFileSize(bytes) {
+        if (bytes === 0) return '0 Bytes';
+        const k = 1024;
+        const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+    }
+});
+
+// Modal functions
+function openModal(modalId) {
+    document.getElementById(modalId).style.display = 'flex';
+}
+function closeModal(modalId) {
+    document.getElementById(modalId).style.display = 'none';
+}
+window.onclick = function(event) {
+    if (event.target.classList.contains('modal')) {
+        event.target.style.display = "none";
+    }
+}
+
+function loadTableList() {
+    const tablesListModal = document.getElementById('tables-list-modal');
+    openModal('table-browser-modal');
+    tablesListModal.innerHTML = '<div class="loader"></div>';
+    
+    fetch("{{ url_for('list_db_tables_api') }}")
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'ok' && data.tables.length > 0) {
+                let html = '<ul class="db-table-list">';
+                data.tables.forEach(table => {
+                    html += `<li>
+                                <button class="db-table-item-button" onclick="selectTable('${table.name}')">
+                                    ${table.name} <span class="table-col-count">(${table.columns} cols)</span>
+                                </button>
+                             </li>`;
+                });
+                html += '</ul>';
+                tablesListModal.innerHTML = html;
+            } else if (data.tables.length === 0) {
+                tablesListModal.innerHTML = '<p>No tables found in the public schema.</p>';
+            } else {
+                tablesListModal.innerHTML = `<p class="error-text">Error: ${data.message || 'Could not load tables.'}</p>`;
+            }
+        })
+        .catch(error => {
+            tablesListModal.innerHTML = `<p class="error-text">Request failed: ${error}</p>`;
+        });
+}
+
+function selectTable(tableName) {
+    document.getElementById('historic_table_name').value = tableName;
+    closeModal('table-browser-modal');
+    // Optionally, submit the form or provide feedback
+    // document.getElementById('historic-table-form').submit();
+    flashMessage(`Table '${tableName}' selected. Click "Set" to confirm.`, 'info');
+}
+
+function checkTableInfo() {
+    const tableName = document.getElementById('historic_table_name').value;
+    if (!tableName) {
+        alert('Please enter or select a baseline table name first.');
+        return;
+    }
+    const tableDetailsDiv = document.getElementById('table-details');
+    document.getElementById('modal-table-name').textContent = tableName;
+    openModal('table-info-modal');
+    tableDetailsDiv.innerHTML = '<div class="loader"></div>';
+
+    fetch(`/api/table_info/${encodeURIComponent(tableName)}`)
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'ok') {
+                let html = `<div class="table-info-grid">
+                                <div class="info-item"><strong>Rows:</strong> ${data.row_count.toLocaleString()}</div>
+                                <div class="info-item"><strong>Columns:</strong> ${data.column_count}</div>
                             </div>
-                            <div class="columns-list">
-                                <h5>Columns:</h5>
-                                <div class="columns-grid">
-                        `;
-                        
-                        data.columns.forEach(col => {
-                            html += `
-                                <div class="column-item">
-                                    <span class="column-name">${col.name}</span>
-                                    <span class="column-type">${col.type}</span>
-                                    <span class="column-nullable">${col.nullable ? 'NULL' : 'NOT NULL'}</span>
-                                </div>
-                            `;
-                        });
-                        
-                        html += '</div></div>';
-                        tableDetails.innerHTML = html;
-                    } else {
-                        tableDetails.innerHTML = `<p class="error">Error: ${data.message}</p>`;
-                    }
-                })
-                .catch(error => {
-                    tableDetails.innerHTML = `<p class="error">Failed to load table info: ${error.message}</p>`;
+                            <h4>Column Details:</h4>
+                            <ul class="column-details-list">`;
+                data.columns.forEach(col => {
+                    html += `<li>
+                                <span class="col-name">${col.name}</span>
+                             </li>   
+                             <li>
+                                <span class="col-type">${col.type}</span>
+                             </li>
+                             <li>
+                                <span class="col-nullable">${col.nullable ? 'Nullable' : 'Not Null'}</span>
+                             </li>`;
                 });
-        }
-
-        function checkSystemHealth() {
-            fetch('/api/health')
-                .then(response => response.json())
-                .then(data => {
-                    let message = `System Status: ${data.service_status.toUpperCase()}\n\n`;
-                    message += `Database: ${data.components.database.status}\n`;
-                    message += `${data.components.database.message}\n\n`;
-                    message += `Log Table: ${data.components.log_table.status}\n`;
-                    message += `${data.components.log_table.message}\n\n`;
-                    message += `Historic Table Config: ${data.components.historic_table_config.status}\n`;
-                    message += `${data.components.historic_table_config.message}`;
-                    
-                    alert(message);
-                })
-                .catch(error => {
-                    alert(`Health check failed: ${error.message}`);
-                });
-        }
-    </script>
-
-    <style>
-        .input-group {
-            display: flex;
-            gap: 10px;
-            align-items: flex-end;
-        }
-
-        .input-group input {
-            flex: 1;
-            padding: 10px;
-            border: 1px solid var(--border-color);
-            border-radius: var(--border-radius-sm);
-            font-size: 1em;
-        }
-
-        .form-group {
-            margin-bottom: 20px;
-        }
-
-        .form-group label {
-            display: block;
-            margin-bottom: 5px;
-            font-weight: 600;
-            color: var(--heading-color);
-        }
-
-        .form-text {
-            display: block;
-            margin-top: 5px;
-            color: #6c757d;
-            font-size: 0.9em;
-        }
-
-        .current-config {
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #e3f2fd;
-            border-radius: var(--border-radius-sm);
-            border-left: 4px solid var(--primary-color);
-        }
-
-        .config-details {
-            display: flex;
-            align-items: center;
-            gap: 15px;
-            margin-bottom: 15px;
-            flex-wrap: wrap;
-        }
-
-        .config-label {
-            font-weight: 500;
-            color: #666;
-        }
-
-        .config-value {
-            font-family: monospace;
-            font-weight: 600;
-            color: var(--primary-color);
-            background-color: rgba(255, 255, 255, 0.7);
-            padding: 2px 6px;
-            border-radius: 3px;
-        }
-
-        .status-indicator {
-            color: #28a745;
-            font-weight: 600;
-        }
-
-        .config-actions {
-            display: flex;
-            gap: 10px;
-            flex-wrap: wrap;
-        }
-
-        .config-warning {
-            margin-top: 15px;
-            padding: 12px;
-            background-color: #fff3cd;
-            color: #856404;
-            border-radius: var(--border-radius-sm);
-            border-left: 4px solid #ffc107;
-            display: flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .warning-icon {
-            font-size: 1.2em;
-        }
-
-        .table-browser, .table-info {
-            margin-top: 20px;
-            padding: 15px;
-            background-color: #f8f9fa;
-            border-radius: var(--border-radius-sm);
-            border: 1px solid var(--border-color);
-        }
-
-        .tables-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
-            gap: 15px;
-            margin-top: 10px;
-        }
-
-        .table-item {
-            padding: 15px;
-            background-color: white;
-            border-radius: var(--border-radius-sm);
-            border: 1px solid var(--border-color);
-            text-align: center;
-        }
-
-        .table-name {
-            font-weight: 600;
-            color: var(--primary-color);
-            margin-bottom: 5px;
-        }
-
-        .table-info {
-            color: #666;
-            font-size: 0.9em;
-            margin-bottom: 10px;
-        }
-
-        .table-stats {
-            display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-            gap: 15px;
-            margin-bottom: 20px;
-        }
-
-        .stat-item {
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-            padding: 10px;
-            background-color: white;
-            border-radius: var(--border-radius-sm);
-            text-align: center;
-        }
-
-        .stat-label {
-            font-size: 0.8em;
-            color: #666;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-        }
-
-        .stat-value {
-            font-weight: 600;
-            color: var(--primary-color);
-        }
-
-        .columns-list h5 {
-            margin-bottom: 10px;
-            color: var(--heading-color);
-        }
-
-        .columns-grid {
-            display: grid;
-            grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
-            gap: 8px;
-        }
-
-        .column-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 8px 12px;
-            background-color: white;
-            border-radius: var(--border-radius-sm);
-            font-size: 0.9em;
-        }
-
-        .column-name {
-            font-family: monospace;
-            font-weight: 600;
-        }
-
-        .column-type {
-            color: #666;
-            font-size: 0.8em;
-        }
-
-        .column-nullable {
-            color: #888;
-            font-size: 0.7em;
-        }
-
-        .action-buttons {
-            display: flex;
-            gap: 15px;
-            flex-wrap: wrap;
-        }
-
-        .btn {
-            display: inline-flex;
-            align-items: center;
-            gap: 6px;
-            padding: 10px 16px;
-            border: none;
-            border-radius: var(--border-radius-sm);
-            font-size: 0.9em;
-            font-weight: 500;
-            text-decoration: none;
-            cursor: pointer;
-            transition: all 0.2s ease;
-        }
-
-        .btn-primary {
-            background-color: var(--primary-color);
-            color: white;
-        }
-
-        .btn-primary:hover {
-            background-color: var(--primary-hover-color);
-        }
-
-        .btn-outline {
-            background-color: transparent;
-            border: 1px solid var(--primary-color);
-            color: var(--primary-color);
-        }
-
-        .btn-outline:hover {
-            background-color: var(--primary-color);
-            color: white;
-        }
-
-        .btn-sm {
-            padding: 6px 12px;
-            font-size: 0.8em;
-        }
-
-        .btn-icon {
-            font-size: 1em;
-        }
-
-        .error {
-            color: #dc3545;
-            font-style: italic;
-        }
-
-        .file-preview {
-            margin-top: 15px;
-            padding: 10px;
-            background-color: #e3f2fd;
-            border-radius: var(--border-radius-sm);
-        }
-
-        .file-info {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .file-name {
-            font-weight: 500;
-        }
-
-        .file-size {
-            color: #666;
-            font-size: 0.9em;
-        }
-
-        .upload-area.drag-over {
-            border-color: var(--primary-color);
-            background-color: #f0faff;
-        }
-
-        @media (max-width: 768px) {
-            .config-details {
-                flex-direction: column;
-                align-items: flex-start;
-                gap: 10px;
+                html += '</ul>';
+                tableDetailsDiv.innerHTML = html;
+            } else {
+                tableDetailsDiv.innerHTML = `<p class="error-text">Error: ${data.message}</p>`;
             }
+        })
+        .catch(error => {
+            tableDetailsDiv.innerHTML = `<p class="error-text">Failed to load table info: ${error}</p>`;
+        });
+}
 
-            .input-group {
-                flex-direction: column;
-                align-items: stretch;
-            }
+function checkSystemHealth() {
+    // Could open this in a modal too
+    fetch("{{ url_for('health_check') }}")
+        .then(response => response.json())
+        .then(data => {
+            // For now, using alert. Replace with modal display.
+            let message = `System Status: ${data.service_status.toUpperCase()}\n\n`;
+            message += `Database: ${data.components.database.status} - ${data.components.database.message}\n`;
+            message += `Log Table: ${data.components.log_table.status} - ${data.components.log_table.message}\n`;
+            message += `Baseline Config: ${data.components.historic_table_config.status} - ${data.components.historic_table_config.message}`;
+            alert(message);
+        })
+        .catch(error => alert(`Health check failed: ${error}`));
+}
 
-            .action-buttons {
-                flex-direction: column;
-            }
-
-            .tables-grid {
-                grid-template-columns: 1fr;
-            }
-
-            .table-stats {
-                grid-template-columns: 1fr;
-            }
-
-            .columns-grid {
-                grid-template-columns: 1fr;
-            }
+// Helper for dynamic flash messages if not redirecting
+function flashMessage(message, category = 'info') {
+    const container = document.querySelector('.flashes-container') || createFlashesContainer();
+    const flashDiv = document.createElement('div');
+    flashDiv.className = `flash-message ${category}`;
+    flashDiv.textContent = message;
+    container.prepend(flashDiv); // Add to top
+    setTimeout(() => {
+        flashDiv.style.opacity = '0';
+        setTimeout(() => flashDiv.remove(), 500);
+    }, 5000); // Disappear after 5 seconds
+}
+function createFlashesContainer() {
+    let container = document.querySelector('.flashes-container');
+    if (!container) {
+        container = document.createElement('div');
+        container.className = 'flashes-container';
+        const dashboardHeader = document.querySelector('.dashboard-header');
+        if (dashboardHeader) {
+            dashboardHeader.parentNode.insertBefore(container, dashboardHeader.nextSibling);
+        } else {
+            document.querySelector('.dashboard-container').prepend(container);
         }
-    </style>
+    }
+    return container;
+}
+
+</script>
+
+<style>
+    :root {
+        --primary-color: #007bff; /*#0056b3;*/
+        --primary-hover-color: #0056b3;
+        --secondary-color: #6c757d;
+        --success-color: #28a745;
+        --warning-color: #ffc107;
+        --danger-color: #dc3545;
+        --light-color: #f8f9fa;
+        --dark-color: #343a40;
+        --text-color: #212529;
+        --muted-color: #6c757d;
+        --border-color: #dee2e6;
+        --border-radius-sm: 0.25rem;
+        --border-radius-md: 0.5rem;
+        --font-family-sans-serif: "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        --card-shadow: 0 2px 10px rgba(0,0,0,0.075);
+        --input-focus-shadow: 0 0 0 0.2rem rgba(0, 123, 255, 0.25);
+    }
+
+    body {
+        font-family: var(--font-family-sans-serif);
+        background-color: #f4f7f9; /* Lighter page background */
+        color: var(--text-color);
+        line-height: 1.6;
+        margin: 0;
+    }
+
+    .container {
+        max-width: 1200px;
+        margin: 0 auto;
+        padding: 0 20px;
+    }
+
+    .dashboard-container {
+        padding-top: 10px;
+        padding-bottom: 10px;
+    }
+
+    .dashboard-header {
+        text-align: center;
+        margin-bottom: 10px;
+    }
+    .dashboard-header h1 {
+        font-size: 2.2em;
+        color: var(--dark-color);
+        margin-bottom: 0.25em;
+    }
+    .dashboard-header .subtitle {
+        font-size: 1.1em;
+        color: var(--muted-color);
+        max-width: 600px;
+        margin: 0 auto;
+    }
+    
+    .flashes-container {
+        margin-bottom: 20px;
+    }
+    .flash-message {
+        padding: 12px 18px;
+        border-radius: var(--border-radius-sm);
+        margin-bottom: 10px;
+        border: 1px solid transparent;
+        opacity: 1;
+        transition: opacity 0.5s ease-out;
+    }
+    .flash-message.success { background-color: #d4edda; color: #155724; border-color: #c3e6cb; }
+    .flash-message.error { background-color: #f8d7da; color: #721c24; border-color: #f5c6cb; }
+    .flash-message.warning { background-color: #fff3cd; color: #856404; border-color: #ffeeba; }
+    .flash-message.info { background-color: #d1ecf1; color: #0c5460; border-color: #bee5eb; }
+
+
+    .dashboard-main-grid {
+        display: grid;
+        grid-template-columns: 1fr; /* Single column by default */
+        gap: 25px;
+    }
+
+    @media (min-width: 992px) { /* Two columns for larger screens */
+        .dashboard-main-grid {
+            grid-template-columns: 1fr 1.2fr; /* Adjust ratio as needed */
+        }
+    }
+
+    .dashboard-column > section:not(:last-child) {
+        margin-bottom: 10px;
+    }
+
+    .card.modern-card {
+        background-color: #fff;
+        border-radius: var(--border-radius-md);
+        box-shadow: var(--card-shadow);
+        padding: 10px;
+        border: 1px solid var(--border-color);
+    }
+    .card.primary-action-card {
+        border-top: 4px solid var(--primary-color);
+    }
+
+    .card-title {
+        font-size: 1.3em;
+        color: var(--dark-color);
+        margin-top: 0;
+        margin-bottom: 8px;
+        display: flex;
+        align-items: center;
+    }
+    .card-title .emoji {
+        font-size: 1.3em;
+        margin-right: 10px;
+    }
+    .card-subtitle {
+        font-size: 0.95em;
+        color: var(--muted-color);
+        margin-top: 0;
+        margin-bottom: 20px;
+    }
+
+    .form-group {
+        margin-bottom: 20px;
+    }
+    .form-group label:not(.sr-only) {
+        display: block;
+        font-weight: 500;
+        margin-bottom: 6px;
+        font-size: 0.9em;
+    }
+    .form-text {
+        font-size: 0.85em;
+        color: var(--muted-color);
+        margin-top: 5px;
+    }
+    .sr-only { /* For accessibility, hide visually but keep for screen readers */
+        position: absolute;
+        width: 1px;
+        height: 1px;
+        padding: 0;
+        margin: -1px;
+        overflow: hidden;
+        clip: rect(0, 0, 0, 0);
+        white-space: nowrap;
+        border: 0;
+    }
+
+    .input-group.modern-input-group {
+        display: flex;
+        align-items: center;
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius-sm);
+        transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+    }
+    .input-group.modern-input-group:focus-within {
+        border-color: var(--primary-color);
+        box-shadow: var(--input-focus-shadow);
+    }
+    .input-group.modern-input-group .input-group-icon {
+        padding: 0 12px;
+        color: var(--muted-color);
+        font-size: 1.1em;
+    }
+    .input-group.modern-input-group input[type="text"] {
+        flex-grow: 1;
+        border: none;
+        padding: 10px 0; /* Adjusted padding */
+        font-size: 1em;
+        background-color: transparent;
+        outline: none;
+    }
+    .input-group.modern-input-group .btn {
+        border-top-left-radius: 0;
+        border-bottom-left-radius: 0;
+        height: 100%;
+        padding: 10px 15px;
+    }
+
+
+    .current-config-display {
+        margin-top: 15px;
+        padding: 15px;
+        background-color: var(--light-color);
+        border-radius: var(--border-radius-sm);
+        border: 1px solid #e0e0e0;
+    }
+    .config-status {
+        display: flex;
+        align-items: center;
+        margin-bottom: 10px;
+        font-size: 0.95em;
+    }
+    .status-icon {
+        margin-right: 8px;
+        font-weight: bold;
+    }
+    .status-icon.success { color: var(--success-color); }
+    .status-icon.warning { color: var(--warning-color); }
+    
+    .config-warning-display {
+        margin-top: 15px;
+        padding: 12px;
+        background-color: #fff3cd;
+        color: #856404;
+        border-radius: var(--border-radius-sm);
+        border-left: 4px solid var(--warning-color);
+        display: flex;
+        align-items: center;
+        font-size: 0.9em;
+    }
+
+
+    .upload-area-container {
+        margin-bottom: 20px;
+    }
+    .upload-area.compact-upload-area {
+        display: flex; /* Initially shown */
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 1px;
+        border: 2px dashed var(--border-color);
+        border-radius: var(--border-radius-md);
+        background-color: var(--light-color);
+        text-align: center;
+        cursor: pointer;
+        transition: background-color 0.2s ease, border-color 0.2s ease;
+        min-height: 150px; /* Reduced height */
+    }
+    .upload-area.compact-upload-area:hover, .upload-area.drag-over {
+        border-color: var(--primary-color);
+        background-color: #e9f4ff;
+    }
+    .file-input-hidden { /* To hide the default file input */
+        display: none;
+    }
+    .upload-svg-icon {
+        width: 48px;
+        height: 48px;
+        fill: var(--primary-color);
+        margin-bottom: 10px;
+    }
+    .upload-prompt-text {
+        margin: 5px 0;
+        font-size: 1em;
+        color: var(--muted-color);
+    }
+    .browse-link {
+        color: var(--primary-color);
+        text-decoration: underline;
+        cursor: pointer;
+    }
+    .upload-requirements-text {
+        font-size: 0.85em;
+        color: var(--muted-color);
+        margin-top: 5px;
+    }
+
+    .file-preview-compact {
+        display: flex;
+        align-items: center;
+        padding: 10px 15px;
+        background-color: #e9f4ff;
+        border: 1px solid var(--primary-color);
+        border-radius: var(--border-radius-sm);
+        font-size: 0.9em;
+    }
+    .file-icon-preview { margin-right: 8px; font-size: 1.2em; }
+    .file-name-preview { flex-grow: 1; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .file-size-preview { margin-left: 10px; color: var(--muted-color); font-size: 0.9em; }
+    .remove-file-compact {
+        background: none;
+        border: none;
+        color: var(--danger-color);
+        font-size: 1.5em;
+        cursor: pointer;
+        padding: 0 0 0 10px;
+        line-height: 1;
+    }
+
+    .analysis-options-group {
+        margin-bottom: 20px;
+        padding: 15px;
+        background-color: var(--light-color);
+        border-radius: var(--border-radius-sm);
+    }
+    .option-label-title {
+        display: block;
+        font-weight: 500;
+        margin-bottom: 10px;
+        font-size: 0.95em;
+    }
+    .radio-button-group {
+        display: flex;
+        gap: 10px;
+    }
+    .radio-option-item {
+        flex: 1;
+        padding: 10px 15px;
+        border: 1px solid var(--border-color);
+        border-radius: var(--border-radius-sm);
+        cursor: pointer;
+        text-align: center;
+        transition: background-color 0.2s ease, border-color 0.2s ease;
+        font-size: 0.9em;
+    }
+    .radio-option-item input[type="radio"] {
+        display: none; /* Hide actual radio, style the label */
+    }
+    .radio-option-item:hover {
+        background-color: #e9ecef;
+    }
+    .radio-option-item.active {
+        background-color: var(--primary-color);
+        color: white;
+        border-color: var(--primary-color);
+        font-weight: 500;
+    }
+
+    .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center; /* Center content for block buttons */
+        gap: 8px;
+        padding: 10px 20px;
+        font-size: 1em;
+        font-weight: 500;
+        border-radius: var(--border-radius-sm);
+        border: 1px solid transparent;
+        text-decoration: none;
+        cursor: pointer;
+        transition: all 0.2s ease;
+        white-space: nowrap;
+    }
+    .btn-primary { background-color: var(--primary-color); color: white; border-color: var(--primary-color); }
+    .btn-primary:hover { background-color: var(--primary-hover-color); border-color: var(--primary-hover-color); }
+    .btn-secondary { background-color: var(--secondary-color); color: white; border-color: var(--secondary-color); }
+    .btn-secondary:hover { background-color: #5a6268; border-color: #545b62; }
+    .btn-outline { background-color: transparent; color: var(--primary-color); border-color: var(--primary-color); }
+    .btn-outline:hover { background-color: var(--primary-color); color: white; }
+    .btn-sm { padding: 6px 12px; font-size: 0.85em; }
+    .btn-xl { padding: 12px 24px; font-size: 1.1em; }
+    .btn-block { display: flex; width: 100%; } /* Ensure flex for icon alignment */
+    .btn .btn-icon { font-size: 1.1em; }
+    .btn .spinner {
+        width: 1em; height: 1em;
+        border: 2px solid rgba(255,255,255,0.3);
+        border-radius: 50%;
+        border-top-color: #fff;
+        animation: spin 1s ease-in-out infinite;
+        margin-left: 8px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    button:disabled { opacity: 0.65; cursor: not-allowed; }
+
+    .quick-actions-section .action-buttons-vertical .btn:not(:last-child) {
+        margin-bottom: 10px;
+    }
+    
+    .modal {
+        display: none; 
+        position: fixed; 
+        z-index: 1000; 
+        left: 0; top: 0;
+        width: 100%; height: 100%;
+        overflow: auto; 
+        background-color: rgba(0,0,0,0.5); 
+        align-items: center;
+        justify-content: center;
+    }
+    .modal-content {
+        background-color: #fff;
+        margin: auto;
+        padding: 25px;
+        border: 1px solid #888;
+        border-radius: var(--border-radius-md);
+        width: 90%;
+        max-width: 600px;
+        box-shadow: 0 5px 15px rgba(0,0,0,0.2);
+        position: relative;
+    }
+    .close-button {
+        color: #aaa;
+        float: right; /* Keep for tradition, but position:absolute might be better */
+        position: absolute;
+        top: 10px;
+        right: 15px;
+        font-size: 28px;
+        font-weight: bold;
+        cursor: pointer;
+    }
+    .close-button:hover, .close-button:focus { color: black; text-decoration: none; }
+    .modal h4 { margin-top: 0; color: var(--primary-color); }
+    .loader {
+        border: 4px solid #f3f3f3;
+        border-top: 4px solid var(--primary-color);
+        border-radius: 50%;
+        width: 30px;
+        height: 30px;
+        animation: spin 1s linear infinite;
+        margin: 20px auto;
+    }
+    .db-table-list { list-style: none; padding: 0; max-height: 300px; overflow-y: auto; }
+    .db-table-list li { margin-bottom: 5px; }
+    .db-table-item-button {
+        display: block; width: 100%; text-align: left;
+        padding: 8px 12px; background-color: var(--light-color);
+        border: 1px solid var(--border-color); border-radius: var(--border-radius-sm);
+        cursor: pointer; transition: background-color 0.2s;
+    }
+    .db-table-item-button:hover { background-color: #e2e6ea; }
+    .table-col-count { font-size: 0.85em; color: var(--muted-color); margin-left: 5px; }
+    .error-text { color: var(--danger-color); font-size: 0.9em; }
+
+    .table-info-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 15px; }
+    .info-item { padding: 8px; background-color: var(--light-color); border-radius: var(--border-radius-sm); font-size: 0.9em; }
+    .column-details-list { list-style: none; padding: 0; font-size: 0.9em; max-height: 250px; overflow-y: auto;}
+    .column-details-list li { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px dotted var(--border-color); }
+    .column-details-list li:last-child { border-bottom: none; }
+    .col-name { font-weight: 500; }
+    .col-type { color: var(--muted-color); }
+    .col-nullable { font-style: italic; font-size: 0.9em; }
+
+
+    .page-footer.compact-footer {
+        text-align: center;
+        padding: 15px;
+        margin-top: 30px;
+        font-size: 0.85em;
+        color: var(--muted-color);
+        background-color: #e9ecef; /* Slight background for footer */
+    }
+
+    /* Main Nav Styling */
+    .main-nav-container {
+        background-color: #fff;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+        padding: 0 20px;
+        margin-bottom: 20px; /* Add space below nav */
+    }
+    .main-nav {
+        max-width: 1200px;
+        margin: 0 auto;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        height: 25px;
+    }
+    .nav-brand {
+        font-size: 1.25em;
+        font-weight: 600;
+        color: var(--dark-color);
+        text-decoration: none;
+        display: flex;
+        align-items: center;
+    }
+    .nav-brand .nav-icon { margin-right: 8px; font-size: 1.3em; }
+    .nav-links { display: flex; gap: 10px; }
+    .nav-link {
+        padding: 8px 15px;
+        text-decoration: none;
+        color: var(--muted-color);
+        font-weight: 500;
+        border-radius: var(--border-radius-sm);
+        transition: color 0.2s ease, background-color 0.2s ease;
+    }
+    .nav-link:hover {
+        color: var(--primary-color);
+        background-color: var(--light-color);
+    }
+    .nav-link.active {
+        color: var(--primary-color);
+        background-color: #e9f4ff; /* Light primary background for active */
+        font-weight: 600;
+    }
+
+
+    @media (max-width: 768px) {
+        .dashboard-header h1 { font-size: 1.8em; }
+        .dashboard-header .subtitle { font-size: 1em; }
+        .card.modern-card { padding: 20px; }
+        .btn-xl { padding: 10px 20px; font-size: 1em; }
+        .main-nav { flex-direction: column; height: auto; padding: 10px 0; }
+        .nav-links { margin-top: 10px; }
+    }
+
+</style>
 </body>
 </html>

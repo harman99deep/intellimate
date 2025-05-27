@@ -7,7 +7,7 @@
         </a>
         <div class="nav-links">
             <a href="{{ url_for('index') }}" class="nav-link">Dashboard</a>
-            <a href="{{ url_for('list_db_tables') }}" class="nav-link">History</a>
+            <a href="{{ url_for('list_db_tables_page') }}" class="nav-link">History</a>
         </div>
     </nav>
 </header>
@@ -24,40 +24,40 @@
                 </div>
             </div>
             <div class="analysis-tabs">
-                <a href="{{ url_for('view_overview', run_id=run_id) if run_id else url_for('analysis_nav') }}" 
+                <a href="{{ url_for('view_overview', run_id=run_id) if run_id else url_for('list_db_tables_page') }}"
                    class="tab-link {{ 'active' if current_tab == 'overview' else '' }}">
                     <span class="tab-icon">📊</span>
                     Overview
                 </a>
-                <a href="{{ url_for('view_data_drift', run_id=run_id) if run_id else '#' }}" 
+                <a href="{{ url_for('view_data_drift', run_id=run_id) if run_id else '#' }}"
                    class="tab-link {{ 'active' if current_tab == 'data-drift' else '' }}" {{ 'disabled' if not run_id else '' }}>
                     <span class="tab-icon">📈</span>
                     Data Drift
-                    {% if (results.summary.statistical_drift_count|default(0) > 0) or (results.summary.distribution_drift_count|default(0) > 0) %}
+                    {% if results.summary and ((results.summary.statistical_drift_count|default(0) > 0) or (results.summary.distribution_drift_count|default(0) > 0)) %}
                         <span class="tab-badge">{{ results.summary.statistical_drift_count|default(0) + results.summary.distribution_drift_count|default(0) }}</span>
                     {% endif %}
                 </a>
-                <a href="{{ url_for('view_volume_anomalies', run_id=run_id) if run_id else '#' }}" 
+                <a href="{{ url_for('view_volume_anomalies', run_id=run_id) if run_id else '#' }}"
                    class="tab-link {{ 'active' if current_tab == 'volume-anomalies' else '' }}" {{ 'disabled' if not run_id else '' }}>
                     <span class="tab-icon">📦</span>
                     Volume Anomalies
-                    {% if results.summary.volume_anomaly_count|default(0) > 0 %}
+                    {% if results.summary and results.summary.volume_anomaly_count|default(0) > 0 %}
                         <span class="tab-badge">{{ results.summary.volume_anomaly_count|default(0) }}</span>
                     {% endif %}
                 </a>
-                <a href="{{ url_for('view_schema_changes', run_id=run_id) if run_id else '#' }}" 
+                <a href="{{ url_for('view_schema_changes', run_id=run_id) if run_id else '#' }}"
                    class="tab-link {{ 'active' if current_tab == 'schema-changes' else '' }}" {{ 'disabled' if not run_id else '' }}>
                     <span class="tab-icon">🔧</span>
                     Schema Changes
-                    {% if results.summary.schema_change_count|default(0) > 0 %}
+                    {% if results.summary and results.summary.schema_change_count|default(0) > 0 %}
                         <span class="tab-badge">{{ results.summary.schema_change_count|default(0) }}</span>
                     {% endif %}
                 </a>
-                <a href="{{ url_for('view_alerts', run_id=run_id) if run_id else '#' }}" 
+                <a href="{{ url_for('view_alerts', run_id=run_id) if run_id else '#' }}"
                    class="tab-link {{ 'active' if current_tab == 'alerts' else '' }}" {{ 'disabled' if not run_id else '' }}>
                     <span class="tab-icon">🚨</span>
                     Alerts
-                    {% if results.summary.alert_count|default(0) > 0 %}
+                    {% if results.summary and results.summary.alert_count|default(0) > 0 %}
                         <span class="tab-badge critical">{{ results.summary.alert_count }}</span>
                     {% endif %}
                 </a>
@@ -132,7 +132,7 @@
     }
 
     .tab-badge {
-        background-color: #dc3545;
+        background-color: #dc3545; /* Default to critical color for badges */
         color: white;
         font-size: 0.7em;
         padding: 2px 6px;
@@ -142,7 +142,7 @@
         margin-left: 4px;
     }
 
-    .tab-badge.critical {
+    .tab-badge.critical { /* Specific style for critical alert count */
         background-color: #dc3545;
         animation: pulse 2s infinite;
     }

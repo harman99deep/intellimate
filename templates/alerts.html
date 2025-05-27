@@ -20,16 +20,17 @@
             <p class="page-subtitle">High-priority issues requiring immediate attention</p>
         </div>
 
-        {% if results.data.alerts %}
+        {% if results.data and results.data.alerts %}
             <!-- Critical Alerts Section -->
             <section class="analysis-section">
                 <div class="alerts-container">
                     {% for alert in results.data.alerts %}
-                        <div class="alert-card {{ alert.severity.lower() }}">
+                        <div class="alert-card {{ alert.severity.lower() if alert.severity else 'low' }}">
                             <div class="alert-header">
-                                <div class="alert-indicator {{ alert.severity.lower() }}">
+                                <div class="alert-indicator {{ alert.severity.lower() if alert.severity else 'low' }}">
                                     <span class="alert-icon">
                                         {% if alert.severity == 'Critical' %}🔴
+                                        {% elif alert.severity == 'Medium' %}🟠 <!-- Using a different emoji for medium -->
                                         {% else %}⚠️{% endif %}
                                     </span>
                                 </div>
@@ -40,8 +41,8 @@
                                         <span class="alert-id">{{ alert.id }}</span>
                                     </div>
                                 </div>
-                                <div class="alert-status {{ alert.status }}">
-                                    {{ alert.status.title() }}
+                                <div class="alert-status {{ alert.status.lower() if alert.status else 'unknown' }}">
+                                    {{ alert.status.title() if alert.status else 'Unknown' }}
                                 </div>
                             </div>
                             
@@ -55,11 +56,11 @@
                                     </div>
                                 {% endif %}
                                 
-                                {% if alert.drift_score %}
+                                {% if alert.drift_score is not none %}
                                     <div class="alert-severity-indicator">
                                         <span class="severity-label">Drift Severity:</span>
                                         <div class="severity-bar">
-                                            <div class="severity-fill {{ alert.severity.lower() }}" style="width: {{ (alert.drift_score * 100)|min(100) }}%"></div>
+                                            <div class="severity-fill {{ alert.severity.lower() if alert.severity else 'low' }}" style="width: {{ [alert.drift_score * 100, 100]|min|int }}%"></div>
                                         </div>
                                         <span class="severity-value">{{ "%.3f"|format(alert.drift_score) }}</span>
                                     </div>
@@ -94,7 +95,8 @@
                 <div class="alert-stats">
                     <div class="stats-row">
                         <div class="stat-group">
-                            <div class="stat-value critical">{{ results.data.alerts|selectattr("severity", "equalto", "Critical")|list|length }}</div>
+                            {# Use the pre-filtered list or calculate from all alerts #}
+                            <div class="stat-value critical">{{ (results.data.critical_alerts_for_display if results.data.critical_alerts_for_display is defined else results.data.alerts|selectattr("severity", "equalto", "Critical")|list)|length }}</div>
                             <div class="stat-label">Critical Alerts</div>
                         </div>
                         <div class="stat-group">
@@ -133,47 +135,50 @@
                 <div class="priority-actions">
                     <h3>Priority Actions Required</h3>
                     <div class="action-items">
-                        {% set critical_alerts = results.data.alerts|selectattr("severity", "equalto", "Critical")|list %}
-                        {% if critical_alerts %}
+                        {% set critical_alerts_list = results.data.critical_alerts_for_display if results.data.critical_alerts_for_display is defined else results.data.alerts|selectattr("severity", "equalto", "Critical")|list %}
+                        {% if critical_alerts_list %}
                             <div class="action-item critical">
                                 <span class="action-icon">🔥</span>
                                 <div class="action-content">
                                     <strong>Immediate Investigation Required:</strong>
-                                    {{ critical_alerts|length }} critical alert{{ 's' if critical_alerts|length != 1 else '' }} detected. 
+                                    {{ critical_alerts_list|length }} critical alert{{ 's' if critical_alerts_list|length != 1 else '' }} detected. 
                                     Review data pipeline integrity and investigate root causes immediately.
                                 </div>
                             </div>
                         {% endif %}
                         
-                        {% set drift_alerts = results.data.alerts|selectattr("type", "match", ".*Drift.*")|list %}
-                        {% if drift_alerts %}
+                        {% set drift_alerts_list = results.data.drift_alerts_for_display if results.data.drift_alerts_for_display is defined else [] %}
+                        {% if drift_alerts_list %}
                             <div class="action-item">
                                 <span class="action-icon">📈</span>
                                 <div class="action-content">
                                     <strong>Data Drift Detected:</strong>
                                     Monitor data quality and consider updating baseline if drift is expected.
+                                    ({{ drift_alerts_list|length }} drift alert{{ 's' if drift_alerts_list|length != 1 else '' }})
                                 </div>
                             </div>
                         {% endif %}
                         
-                        {% set volume_alerts = results.data.alerts|selectattr("type", "equalto", "Volume Anomaly")|list %}
-                        {% if volume_alerts %}
+                        {% set volume_alerts_list = results.data.volume_alerts_for_display if results.data.volume_alerts_for_display is defined else [] %}
+                        {% if volume_alerts_list %}
                             <div class="action-item">
                                 <span class="action-icon">📦</span>
                                 <div class="action-content">
                                     <strong>Volume Changes:</strong>
                                     Verify data sources and ingestion processes for completeness.
+                                    ({{ volume_alerts_list|length }} volume alert{{ 's' if volume_alerts_list|length != 1 else '' }})
                                 </div>
                             </div>
                         {% endif %}
                         
-                        {% set schema_alerts = results.data.alerts|selectattr("type", "equalto", "Schema Change")|list %}
-                        {% if schema_alerts %}
+                        {% set schema_alerts_list = results.data.schema_alerts_for_display if results.data.schema_alerts_for_display is defined else [] %}
+                        {% if schema_alerts_list %}
                             <div class="action-item">
                                 <span class="action-icon">🔧</span>
                                 <div class="action-content">
                                     <strong>Schema Changes:</strong>
                                     Update downstream processes and documentation to reflect schema modifications.
+                                     ({{ schema_alerts_list|length }} schema alert{{ 's' if schema_alerts_list|length != 1 else '' }})
                                 </div>
                             </div>
                         {% endif %}
@@ -226,7 +231,7 @@
 
         <!-- Navigation Actions -->
         <div class="page-actions">
-            <a href="{{ url_for('view_results', run_id=run_id) }}" class="btn btn-outline">
+            <a href="{{ url_for('view_overview', run_id=run_id) }}" class="btn btn-outline">
                 <span class="btn-icon">📊</span>
                 Back to Overview
             </a>
@@ -253,13 +258,20 @@
         }
 
         .alert-card.critical {
-            border-left-color: #dc3545;
+            border-left-color: #dc3545; /* red */
             box-shadow: 0 4px 20px rgba(220, 53, 69, 0.15);
         }
 
         .alert-card.medium {
-            border-left-color: #ffc107;
+            border-left-color: #ffc107; /* yellow/orange */
         }
+        .alert-card.low {
+            border-left-color: #28a745; /* green */
+        }
+        .alert-card.unknown { /* Fallback if severity is missing */
+             border-left-color: #6c757d; /* grey */
+        }
+
 
         .alert-header {
             display: flex;
@@ -281,8 +293,18 @@
         }
 
         .alert-indicator.critical {
-            background-color: rgba(220, 53, 69, 0.1);
+            background-color: rgba(220, 53, 69, 0.1); /* light red */
         }
+        .alert-indicator.medium {
+            background-color: rgba(255, 193, 7, 0.1); /* light yellow/orange */
+        }
+        .alert-indicator.low {
+            background-color: rgba(40, 167, 69, 0.1); /* light green */
+        }
+         .alert-indicator.unknown {
+            background-color: rgba(108, 117, 125, 0.1); /* light grey */
+        }
+
 
         .alert-icon {
             font-size: 1.5em;
@@ -325,9 +347,22 @@
         }
 
         .alert-status.active {
-            background-color: #dc3545;
+            background-color: #dc3545; /* Critical red for active */
             color: white;
         }
+        .alert-status.acknowledged {
+            background-color: #28a745; /* Green for acknowledged */
+            color: white;
+        }
+         .alert-status.resolved {
+            background-color: #007bff; /* Blue for resolved */
+            color: white;
+        }
+        .alert-status.unknown {
+            background-color: #6c757d; /* Grey for unknown */
+            color: white;
+        }
+
 
         .alert-content {
             padding: 20px;
@@ -381,6 +416,16 @@
         .severity-fill.critical {
             background-color: #dc3545;
         }
+        .severity-fill.medium {
+            background-color: #ffc107;
+        }
+        .severity-fill.low {
+            background-color: #28a745;
+        }
+        .severity-fill.unknown {
+            background-color: #6c757d;
+        }
+
 
         .severity-value {
             font-family: monospace;
@@ -451,9 +496,16 @@
             font-weight: 700;
             margin-bottom: 5px;
         }
+         .stat-value.low {
+            color: #28a745;
+            font-size: 2em;
+            font-weight: 700;
+            margin-bottom: 5px;
+        }
+
 
         .stat-value.active {
-            color: var(--primary-color);
+            color: var(--primary-color); /* Using primary color for 'active' count for now */
             font-size: 2em;
             font-weight: 700;
             margin-bottom: 5px;
@@ -600,10 +652,19 @@
             // In a real implementation, this would make an API call
             console.log('Acknowledging alert:', alertId);
             alert('Alert ' + alertId + ' acknowledged. This would typically update the alert status.');
+            // Example: Update UI directly (for demo purposes)
+            // const alertCard = document.querySelector(`.alert-id:contains('${alertId}')`).closest('.alert-card');
+            // if (alertCard) {
+            //     const statusDiv = alertCard.querySelector('.alert-status');
+            //     if (statusDiv) {
+            //         statusDiv.textContent = 'Acknowledged';
+            //         statusDiv.className = 'alert-status acknowledged'; // Assuming you have CSS for .acknowledged
+            //     }
+            // }
         }
 
         function viewDetails(alertId) {
-            // In a real implementation, this would navigate to detailed view
+            // In a real implementation, this would navigate to detailed view or open a modal
             console.log('Viewing details for alert:', alertId);
             alert('This would show detailed information for alert ' + alertId);
         }
@@ -613,10 +674,10 @@
             const severityFills = document.querySelectorAll('.severity-fill');
             severityFills.forEach(fill => {
                 const width = fill.style.width;
-                fill.style.width = '0%';
+                fill.style.width = '0%'; // Start from 0 for animation
                 setTimeout(() => {
-                    fill.style.width = width;
-                }, 100);
+                    fill.style.width = width; // Animate to actual width
+                }, 100); // Short delay to ensure transition takes effect
             });
         });
     </script>
