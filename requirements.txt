@@ -11,3 +11,4 @@ Werkzeug>=2.0
 tabulate
 psycopg2-binary
 Jinja2>=3.0
+python-dotenv

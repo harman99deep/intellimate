@@ -82,8 +82,15 @@ def get_db_connection():
     if not all([DB_HOST, DB_NAME, DB_USER, DB_PASSWORD]): 
         return None
     try: 
-        return psycopg2.connect(host=DB_HOST, port=DB_PORT, dbname=DB_NAME, 
-                               user=DB_USER, password=DB_PASSWORD)
+        connection = psycopg2.connect(
+            user=DB_USER,
+            password=DB_PASSWORD,
+            host=DB_HOST, 
+            port=DB_PORT, 
+            dbname=DB_NAME, 
+        )
+        return connection
+        
     except psycopg2.Error as e: 
         print(f"DB Connection Error: {e}")
         return None
