@@ -1,4 +1,4 @@
-# analysis_engine.py - Restored with PostgreSQL Historical Data Functionality
+# analysis_engine.py
 
 import pandas as pd
 import numpy as np
@@ -19,13 +19,17 @@ import html
 # --- Configuration ---
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD = (
-    os.getenv("DB_HOST"), os.getenv("DB_PORT"), os.getenv("DB_NAME"),
-    os.getenv("DB_USER"), os.getenv("DB_PASSWORD")
-)
+
+# Supabase PostgreSQL Configuration
+SUPABASE_DB_HOST = os.getenv("HOST")  # Supabase pooler host
+SUPABASE_DB_PORT = os.getenv("PORT", "6543")  # Supabase pooler port
+SUPABASE_DB_NAME = os.getenv("DBNAME", "postgres")
+SUPABASE_DB_USER = os.getenv("USER")  # Supabase connection string user
+SUPABASE_DB_PASSWORD = os.getenv("PASSWORD")
 HISTORIC_TABLE_NAME = os.getenv("HISTORIC_TABLE_NAME")
 ANALYSIS_LOG_TABLE_NAME = os.getenv("ANALYSIS_LOG_TABLE_NAME", "data_analysis_logs")
 
+# Gemini AI Configuration
 USE_GEMINI = False
 gemini_model = None
 if GEMINI_API_KEY:
@@ -79,23 +83,29 @@ def _sanitize_for_json(item):
     return _to_native_py_type(item)
 
 def get_db_connection():
-    if not all([DB_HOST, DB_NAME, DB_USER, DB_PASSWORD]): 
+    """Get a connection to the Supabase PostgreSQL database using connection pooler"""
+    if not all([SUPABASE_DB_HOST, SUPABASE_DB_NAME, SUPABASE_DB_USER, SUPABASE_DB_PASSWORD]):
+        print("Missing Supabase database configuration. Check your environment variables.")
         return None
-    try: 
-        connection = psycopg2.connect(
-            user=DB_USER,
-            password=DB_PASSWORD,
-            host=DB_HOST, 
-            port=DB_PORT, 
-            dbname=DB_NAME, 
+    try:
+        conn = psycopg2.connect(
+            host=SUPABASE_DB_HOST,
+            port=SUPABASE_DB_PORT,
+            dbname=SUPABASE_DB_NAME,
+            user=SUPABASE_DB_USER,
+            password=SUPABASE_DB_PASSWORD,
+            # Supabase recommended connection settings
+            sslmode='require',
+            connect_timeout=10
         )
-        return connection
-        
-    except psycopg2.Error as e: 
-        print(f"DB Connection Error: {e}")
+        print("Successfully connected to Supabase database")
+        return conn
+    except psycopg2.Error as e:
+        print(f"Failed to connect to Supabase database: {e}")
         return None
 
 def execute_db_query(db_conn, query, params=None, fetch_one=False, fetch_all=False):
+    """Execute a query on Supabase PostgreSQL database with proper error handling"""
     if not db_conn: 
         return None
     try:
@@ -107,62 +117,35 @@ def execute_db_query(db_conn, query, params=None, fetch_one=False, fetch_all=Fal
                 return cursor.fetchall()
             db_conn.commit()
             return True
+    except psycopg2.OperationalError as e:
+        print(f"Supabase connection error: {e}")
+        db_conn.rollback()
+        return None
     except psycopg2.Error as e: 
-        print(f"DB Query Error: {e}")
+        print(f"Supabase query error: {e}")
         db_conn.rollback()
         return None
 
 def ensure_log_table_exists(db_conn):
-    """Ensure the analysis log table exists and has the analysis_data column."""
+    """Ensure the analysis log table exists in Supabase"""
     if not db_conn:
         return
     
     try:
-        # Check if table exists
-        table_exists_query = f"""
-        SELECT EXISTS (
-            SELECT FROM information_schema.tables 
-            WHERE table_schema = 'public' 
-            AND table_name = '{ANALYSIS_LOG_TABLE_NAME}'
+        create_table_query = f"""
+        CREATE TABLE IF NOT EXISTS "{ANALYSIS_LOG_TABLE_NAME}" (
+            log_id UUID PRIMARY KEY,
+            run_timestamp TIMESTAMPTZ NOT NULL,
+            status VARCHAR(100) NOT NULL,
+            error_message TEXT,
+            new_data_filename VARCHAR(255),
+            historic_table_name VARCHAR(255),
+            analysis_summary TEXT,
+            analysis_data JSONB 
         );
         """
-        table_exists = execute_db_query(db_conn, table_exists_query, fetch_one=True)
-
-        if not (table_exists and table_exists[0]):
-            create_table_query = f"""
-            CREATE TABLE IF NOT EXISTS "{ANALYSIS_LOG_TABLE_NAME}" (
-                log_id UUID PRIMARY KEY,
-                run_timestamp TIMESTAMPTZ NOT NULL,
-                status VARCHAR(100) NOT NULL,
-                error_message TEXT,
-                new_data_filename VARCHAR(255),
-                historic_table_name VARCHAR(255),
-                analysis_summary TEXT,
-                analysis_data JSONB 
-            );
-            """
-            execute_db_query(db_conn, create_table_query)
-            print(f"Log table '{ANALYSIS_LOG_TABLE_NAME}' created with analysis_data column.")
-        else:
-            # Check if analysis_data column exists
-            column_exists_query = f"""
-            SELECT EXISTS (
-                SELECT FROM information_schema.columns 
-                WHERE table_schema = 'public' 
-                AND table_name = '{ANALYSIS_LOG_TABLE_NAME}' 
-                AND column_name = 'analysis_data'
-            );
-            """
-            column_exists = execute_db_query(db_conn, column_exists_query, fetch_one=True)
-            if not (column_exists and column_exists[0]):
-                alter_table_query = f"""
-                ALTER TABLE "{ANALYSIS_LOG_TABLE_NAME}"
-                ADD COLUMN analysis_data JSONB;
-                """
-                execute_db_query(db_conn, alter_table_query)
-                print(f"Added analysis_data JSONB column to '{ANALYSIS_LOG_TABLE_NAME}'.")
-            else:
-                print(f"Log table '{ANALYSIS_LOG_TABLE_NAME}' and analysis_data column ensured to exist.")
+        execute_db_query(db_conn, create_table_query)
+        print(f"Ensured log table '{ANALYSIS_LOG_TABLE_NAME}' exists with required schema")
                 
     except Exception as e:
         print(f"Error ensuring log table schema: {e}")
