@@ -12,7 +12,6 @@ RUN pip install -r requirements.txt
 
 # Copy the rest of the application code
 COPY . .
-COPY schema.sql /docker-entrypoint-initdb.d/
 # Expose the port the app runs on
 EXPOSE 8080
 
