@@ -20,7 +20,7 @@
                 <h1 class="analysis-title">Analysis Results</h1>
                 <div class="run-info">
                     <span class="run-id">Run ID: {{ run_id }}</span>
-                    <span class="run-timestamp">{{ results.timestamp[:19] if results.timestamp else 'N/A' }}</span>
+                    <span class="run-timestamp">{{ results.timestamp if results.timestamp else 'N/A' }}</span>
                 </div>
             </div>
             <div class="analysis-tabs">

@@ -68,7 +68,7 @@
                                 
                                 <div class="alert-timestamp">
                                     <span class="timestamp-label">Detected:</span>
-                                    <span class="timestamp-value">{{ alert.timestamp[:19] if alert.timestamp else 'N/A' }}</span>
+                                    <span class="timestamp-value">{{ alert.timestamp if alert.timestamp else 'N/A' }}</span>
                                 </div>
                             </div>
                             
