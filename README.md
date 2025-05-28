@@ -1,6 +1,6 @@
 # Data Monitoring Tool
 
-A Flask-based web application for monitoring data quality and detecting data drift, volume anomalies, and schema changes by comparing a new dataset against a historic baseline in a PostgreSQL database.
+A Flask-based web application for monitoring data quality and detecting data drift, volume anomalies, and schema changes by comparing a new dataset against a historic baseline in a Supabase PostgreSQL database.
 
 ## Features
 
@@ -16,32 +16,35 @@ A Flask-based web application for monitoring data quality and detecting data dri
 ### Prerequisites
 
 - Python 3.8+
-- Docker (for running PostgreSQL database)
+- Supabase account with PostgreSQL database
 - pip (Python package installer)
 
-### Database Setup (PostgreSQL)
+### Database Setup (Supabase)
 
-1. Navigate to the `postgres` directory:
-   ```bash
-   cd postgres
+1. Create a project in Supabase and get your database connection details
+2. Configure your environment variables in `.env`:
+   ```env
+   # Supabase Database Configuration
+   USER=your_supabase_user
+   PASSWORD=your_supabase_password
+   HOST=your_supabase_host
+   PORT=6543
+   DBNAME=postgres
+   HISTORIC_TABLE_NAME=your_table_name
+   ANALYSIS_LOG_TABLE_NAME=data_analysis_logs
+
+   # Other Configuration
+   FLASK_SECRET_KEY=your_secret_key
+   GEMINI_API_KEY=your_gemini_api_key  # Optional
    ```
-2. Start the PostgreSQL container using Docker Compose:
-   ```bash
-   docker-compose up -d
-   ```
-3. The database will be available at `localhost:5432`. The initial schema is applied from `postgres/init/schema.sql`.
 
 ### Application Setup
 
-1. Navigate back to the project root directory:
-   ```bash
-   cd ..
-   ```
-2. Create a Python virtual environment (recommended):
+1. Create a Python virtual environment (recommended):
    ```bash
    python -m venv .venv
    ```
-3. Activate the virtual environment:
+2. Activate the virtual environment:
    - On Windows:
      ```bash
      .venv\Scripts\activate
@@ -50,11 +53,11 @@ A Flask-based web application for monitoring data quality and detecting data dri
      ```bash
      source .venv/bin/activate
      ```
-4. Install the required Python packages:
+3. Install the required Python packages:
    ```bash
    pip install -r requirements.txt
    ```
-5. Create a `.env` file in the project root directory based on the `.env.example` (if available, otherwise create one manually) and configure your database connection details and Flask secret key. Example `.env`:
+4. Create a `.env` file in the project root directory based on the `.env.example` (if available, otherwise create one manually) and configure your database connection details and Flask secret key. Example `.env`:
    ```env
    DATABASE_URL=postgresql://user:password@localhost:5432/mydatabase
    FLASK_SECRET_KEY=your_secret_key_here

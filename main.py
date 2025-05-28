@@ -1,19 +1,19 @@
 # main.py
-
-import os
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, session
 from werkzeug.utils import secure_filename
-import analysis_engine # Modified
 import psycopg2
 import psycopg2.extras
-import uuid
 from dotenv import load_dotenv, set_key
 from datetime import datetime, timezone
+import json
+import os
+import uuid
 import html as pyhtml
-import json # Added for JSON parsing
+import analysis_engine
 
 load_dotenv()
 
+# Upload configuration
 UPLOAD_FOLDER = os.getenv('UPLOAD_FOLDER', 'uploads')
 ALLOWED_EXTENSIONS = {'csv'}
 MAX_FILE_UPLOAD_MB = int(os.getenv('MAX_FILE_UPLOAD_MB', 32))
@@ -23,6 +23,7 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['SECRET_KEY'] = os.getenv('FLASK_SECRET_KEY', 'dev_secret_key_change_this_in_prod')
 app.config['MAX_CONTENT_LENGTH'] = MAX_FILE_UPLOAD_MB * 1024 * 1024
 
+# Ensure upload directory exists
 os.makedirs(app.config['UPLOAD_FOLDER'], exist_ok=True)
 
 def allowed_file(filename):
