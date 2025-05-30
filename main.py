@@ -467,51 +467,77 @@ def view_alerts(run_id):
 
 @app.route('/api/health')
 def health_check():
-    db_status, db_message = "ok", "Database connection successful."
-    table_status, table_message = "ok", ""
+    health_info = {
+        'status': 'ok',
+        'timestamp': datetime.now().isoformat(),
+        'components': {
+            'database': {
+                'status': 'ok',
+                'message': 'Database connection successful',
+                'details': {}
+            },
+            'tables': {
+                'status': 'ok',
+                'message': 'All required tables present',
+                'details': {}
+            }
+        }
+    }
+    
     db_conn = None
     try:
         db_conn = analysis_engine.get_db_connection()
         if not db_conn:
-            db_status, db_message = "error", "Database connection failed."
+            health_info['components']['database'].update({
+                'status': 'error',
+                'message': 'Database connection failed'
+            })
+            health_info['status'] = 'error'
         else:
             with db_conn.cursor() as cursor:
-                cursor.execute("SELECT 1;")
-                if not (cursor.fetchone() or [0])[0] == 1:
-                    db_status, db_message = "error", "Database query test failed."
-                else:
-                    try:
-                        cursor.execute(f"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s);", (analysis_engine.ANALYSIS_LOG_TABLE_NAME,))
-                        if cursor.fetchone()[0]:
-                            cursor.execute(f'SELECT COUNT(*) FROM "{analysis_engine.ANALYSIS_LOG_TABLE_NAME}";')
-                            table_message = f"Log table exists with {cursor.fetchone()[0]} records."
-                        else:
-                            table_status, table_message = "warning", "Log table does not exist."
-                    except Exception as e:
-                        table_status, table_message = "error", f"Error checking log table: {str(e)}"
+                # Basic connectivity test
+                cursor.execute("SELECT version();")
+                version = cursor.fetchone()[0]
+                health_info['components']['database']['details']['version'] = version
+                
+                # Check required tables
+                tables_to_check = [analysis_engine.ANALYSIS_LOG_TABLE_NAME]
+                if analysis_engine.HISTORIC_TABLE_NAME:
+                    tables_to_check.append(analysis_engine.HISTORIC_TABLE_NAME)
+                
+                for table in tables_to_check:
+                    cursor.execute(
+                        "SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s);",
+                        (table,)
+                    )
+                    if cursor.fetchone()[0]:
+                        cursor.execute(f'SELECT COUNT(*) FROM "{table}";')
+                        count = cursor.fetchone()[0]
+                        health_info['components']['tables']['details'][table] = {
+                            'exists': True,
+                            'records': count
+                        }
+                    else:
+                        health_info['components']['tables'].update({
+                            'status': 'warning',
+                            'message': f'Table {table} does not exist'
+                        })
+                        health_info['components']['tables']['details'][table] = {
+                            'exists': False
+                        }
+                        if health_info['status'] == 'ok':
+                            health_info['status'] = 'warning'
+                
     except Exception as e:
-        db_status, db_message = "error", f"Database health check failed: {str(e)}"
+        health_info.update({
+            'status': 'error',
+            'error': str(e)
+        })
     finally:
-        if db_conn: db_conn.close()
+        if db_conn:
+            db_conn.close()
     
-    historic_table_status = "ok" if analysis_engine.HISTORIC_TABLE_NAME else "warning"
-    historic_table_message = f"Historic table: {analysis_engine.HISTORIC_TABLE_NAME or 'Not configured'}"
-    
-    overall_status = "ok"
-    if db_status == "error" or table_status == "error": overall_status = "error"
-    elif historic_table_status == "warning" or table_status == "warning": overall_status = "degraded"
-    
-    return jsonify({
-        "service_status": overall_status, "message": "Data Analysis Service",
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "components": {
-            "database": {"status": db_status, "message": db_message},
-            "log_table": {"status": table_status, "message": table_message},
-            "historic_table_config": {"status": historic_table_status, "message": historic_table_message}
-        }
-    })
-
-
+    return jsonify(health_info)
 @app.context_processor
 def inject_global_vars():
     return {
@@ -520,4 +546,11 @@ def inject_global_vars():
     }
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=int(os.getenv("PORT", 8000)))
+    # Test database connection before starting the app
+    print("\nTesting Supabase database connection...")
+    if analysis_engine.test_db_connection():
+        print("Database connection test passed. Starting application...\n")
+        app.run(debug=True, host='0.0.0.0', port=int(os.getenv("PORT", 8000)))
+    else:
+        print("ERROR: Failed to establish database connection. Please check your configuration.")
+        print("Hint: Verify your Supabase credentials and connection details in .env file.")

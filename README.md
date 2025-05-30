@@ -2,6 +2,10 @@
 
 A Flask-based web application for monitoring data quality and detecting data drift, volume anomalies, and schema changes by comparing a new dataset against a historic baseline in a Supabase PostgreSQL database.
 
+## Migration Notice
+
+This tool has been migrated from local PostgreSQL (Docker) to Supabase for improved scalability and easier deployment. The `/postgres` directory and Docker configuration files have been archived.
+
 ## Features
 
 - Upload new CSV datasets for analysis.
@@ -21,16 +25,31 @@ A Flask-based web application for monitoring data quality and detecting data dri
 
 ### Database Setup (Supabase)
 
-1. Create a project in Supabase and get your database connection details
-2. Configure your environment variables in `.env`:
+1. Create a new project in Supabase:
+   - Go to [Supabase Dashboard](https://app.supabase.com)
+   - Click "New Project"
+   - Fill in the project details
+   - Note down your database password
+
+2. Get your database connection details:
+   - In your Supabase project dashboard, go to Settings > Database
+   - Find the "Connection Info" section
+   - Note down the following:
+     - Host: `[project-ref].supabase.co`
+     - Port: `6543` (Supabase connection pooler port)
+     - Database name: `postgres`
+     - User: `postgres`
+     - Password: (the one you set during project creation)
+
+3. Configure your environment variables in `.env`:
    ```env
    # Supabase Database Configuration
-   USER=your_supabase_user
-   PASSWORD=your_supabase_password
-   HOST=your_supabase_host
+   USER=postgres
+   PASSWORD=your_db_password
+   HOST=your-project-ref.supabase.co
    PORT=6543
    DBNAME=postgres
-   HISTORIC_TABLE_NAME=your_table_name
+   HISTORIC_TABLE_NAME=data_baseline_table
    ANALYSIS_LOG_TABLE_NAME=data_analysis_logs
 
    # Other Configuration
@@ -106,21 +125,20 @@ A Flask-based web application for monitoring data quality and detecting data dri
 
 ## Technologies Used
 
-- Flask
-- Pandas
-- NumPy
-- SciPy
-- Scikit-learn
-- Matplotlib
-- Seaborn
-- Google Generative AI (if used for analysis summary)
-- Psycopg2 (PostgreSQL adapter)
-- Python-dotenv
-- Werkzeug
-- Tabulate
-- Jinja2
-- PostgreSQL
-- Docker
+- Flask 3.1.1
+- Pandas 2.2.6
+- NumPy 1.15.3
+- SciPy 1.15.3
+- Scikit-learn 1.4.2
+- Matplotlib 3.10.3
+- Seaborn 0.13.2
+- Google Generative AI (optional, for enhanced analysis summaries)
+- Psycopg2-binary 2.9.9 (PostgreSQL adapter)
+- Python-dotenv 1.0.1
+- Werkzeug 3.0.1
+- Tabulate 0.9.0
+- Jinja2 3.1.3
+- Supabase PostgreSQL (managed database)
 
 ## Health Check
 

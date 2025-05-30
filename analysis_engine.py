@@ -15,6 +15,8 @@ import uuid # CORRECTED: was 'uu' before, now 'uuid'
 from datetime import datetime, timezone, date
 import decimal
 import html
+import time
+from functools import wraps
 
 # --- Configuration ---
 load_dotenv()
@@ -82,26 +84,55 @@ def _sanitize_for_json(item):
         return [_sanitize_for_json(i) for i in item]
     return _to_native_py_type(item)
 
+def retry_on_error(max_retries=3, delay=1):
+    """Retry decorator for database operations"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            retries = 0
+            while retries < max_retries:
+                try:
+                    return func(*args, **kwargs)
+                except psycopg2.OperationalError as e:
+                    retries += 1
+                    if retries == max_retries:
+                        print(f"Failed after {max_retries} retries: {e}")
+                        raise
+                    print(f"Connection attempt {retries} failed, retrying in {delay} seconds...")
+                    time.sleep(delay)
+            return None
+        return wrapper
+    return decorator
+
+@retry_on_error()
 def get_db_connection():
     """Get a connection to the Supabase PostgreSQL database using connection pooler"""
     if not all([SUPABASE_DB_HOST, SUPABASE_DB_NAME, SUPABASE_DB_USER, SUPABASE_DB_PASSWORD]):
-        print("Missing Supabase database configuration. Check your environment variables: HOST, DBNAME, USER, PASSWORD.")
+        print("Missing Supabase database configuration. Check your environment variables.")
         return None
     try:
-        conn = psycopg2.connect(
-            host=SUPABASE_DB_HOST,
-            port=SUPABASE_DB_PORT, # Ensure this is the pooler port (e.g., 6543)
-            dbname=SUPABASE_DB_NAME,
-            user=SUPABASE_DB_USER,
-            password=SUPABASE_DB_PASSWORD,
-            sslmode='require', # Essential for Supabase
-            connect_timeout=10 # Good practice
-        )
-        print(f"Attempting to connect to Supabase: Host={SUPABASE_DB_HOST}, Port={SUPABASE_DB_PORT}, DB={SUPABASE_DB_NAME}, User={SUPABASE_DB_USER}")
-        print("Successfully connected to Supabase database.")
+        connection_params = {
+            'host': SUPABASE_DB_HOST,
+            'port': SUPABASE_DB_PORT,
+            'database': SUPABASE_DB_NAME,
+            'user': SUPABASE_DB_USER,
+            'password': SUPABASE_DB_PASSWORD,
+            'sslmode': 'require',  # Required for Supabase
+            'connect_timeout': 30,  # Increased timeout for initial connection
+            'keepalives': 1,       # Enable keepalive
+            'keepalives_idle': 30, # Seconds between keepalives
+            'target_session_attrs': 'read-write'  # Ensure we connect to primary
+        }
+        
+        conn = psycopg2.connect(**connection_params)
+        conn.autocommit = True  # Ensure autocommit is enabled for DDL operations
+        print("Successfully connected to Supabase database")
         return conn
-    except psycopg2.Error as e:
-        print(f"Failed to connect to Supabase database: {e}")
+    except psycopg2.OperationalError as e:
+        print(f"Failed to connect to Supabase database (Connection Error): {e}")
+        raise
+    except Exception as e:
+        print(f"Failed to connect to Supabase database (Other Error): {e}")
         return None
 
 def execute_db_query(db_conn, query, params=None, fetch_one=False, fetch_all=False):
@@ -623,3 +654,37 @@ def run_analysis(new_filepath, historic_csv_filepath=None):
         if db_conn:
             db_conn.close()
             print("Database connection closed.")
+
+def test_db_connection():
+    """Test the database connection and print detailed information"""
+    try:
+        conn = get_db_connection()
+        if conn:
+            with conn.cursor() as cursor:
+                # Test basic query
+                cursor.execute("SELECT version();")
+                version = cursor.fetchone()[0]
+                print(f"✓ Successfully connected to Supabase")
+                print(f"✓ PostgreSQL version: {version}")
+                
+                # Test schema access
+                cursor.execute("SELECT current_schema();")
+                schema = cursor.fetchone()[0]
+                print(f"✓ Current schema: {schema}")
+                
+                # Test table access if historic table is configured
+                if HISTORIC_TABLE_NAME:
+                    cursor.execute(f"SELECT EXISTS (SELECT FROM information_schema.tables WHERE table_schema = 'public' AND table_name = %s);", 
+                                 (HISTORIC_TABLE_NAME,))
+                    table_exists = cursor.fetchone()[0]
+                    if table_exists:
+                        print(f"✓ Historic table '{HISTORIC_TABLE_NAME}' exists")
+                    else:
+                        print(f"✗ Historic table '{HISTORIC_TABLE_NAME}' does not exist")
+                
+            conn.close()
+            print("✓ Connection test completed successfully")
+            return True
+    except Exception as e:
+        print(f"✗ Connection test failed: {str(e)}")
+        return False
