@@ -131,16 +131,42 @@ Analyze the data and provide comprehensive findings with detailed reasoning.
 """
 
 def get_db_connection():
-    """Get Supabase database connection"""
+    """Get Supabase database connection with enhanced debugging"""
+    if not all([SUPABASE_DB_HOST, SUPABASE_DB_NAME, SUPABASE_DB_USER, SUPABASE_DB_PASSWORD]):
+        print("❌ Missing database configuration. Check environment variables:")
+        print(f"  HOST: {'✅' if SUPABASE_DB_HOST else '❌'}")
+        print(f"  DBNAME: {'✅' if SUPABASE_DB_NAME else '❌'}")
+        print(f"  USER: {'✅' if SUPABASE_DB_USER else '❌'}")
+        print(f"  PASSWORD: {'✅' if SUPABASE_DB_PASSWORD else '❌'}")
+        return None
+    
     try:
+        print(f"🔌 Connecting to Supabase: {SUPABASE_DB_USER}@{SUPABASE_DB_HOST}:{SUPABASE_DB_PORT}/{SUPABASE_DB_NAME}")
+        
         conn = psycopg2.connect(
-            host=SUPABASE_DB_HOST, port=SUPABASE_DB_PORT, database=SUPABASE_DB_NAME,
-            user=SUPABASE_DB_USER, password=SUPABASE_DB_PASSWORD, sslmode='require'
+            host=SUPABASE_DB_HOST, 
+            port=SUPABASE_DB_PORT, 
+            database=SUPABASE_DB_NAME,
+            user=SUPABASE_DB_USER, 
+            password=SUPABASE_DB_PASSWORD, 
+            sslmode='require',
+            connect_timeout=30,
+            keepalives=1,
+            keepalives_idle=30
         )
         conn.autocommit = True
+        print("✅ Database connection established")
         return conn
+        
+    except psycopg2.OperationalError as op_err:
+        print(f"❌ Database connection failed (Operational): {op_err}")
+        print("💡 Check: Network connectivity, credentials, firewall settings")
+        return None
+    except psycopg2.Error as db_err:
+        print(f"❌ Database connection failed (PostgreSQL): {db_err}")
+        return None
     except Exception as e:
-        print(f"DB connection failed: {e}")
+        print(f"❌ Database connection failed (Unexpected): {e}")
         return None
 
 def sanitize_for_json(item):
@@ -163,43 +189,131 @@ def sanitize_for_json(item):
         return str(item)
 
 def ensure_log_table(db_conn):
-    """Ensure analysis log table exists"""
+    """Ensure analysis log table exists with proper schema"""
     if not db_conn:
-        return
+        print("❌ No database connection for table creation")
+        return False
+    
     try:
-        create_query = f'''
-        CREATE TABLE IF NOT EXISTS "{ANALYSIS_LOG_TABLE_NAME}" (
-            log_id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-            run_timestamp TIMESTAMPTZ DEFAULT NOW(),
-            status VARCHAR(200),
-            error_message TEXT,
-            new_data_filename VARCHAR(255),
-            historic_table_name VARCHAR(255),
-            analysis_summary TEXT,
-            analysis_data JSONB
-        )'''
+        # Check if table exists first
+        check_query = """
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+            WHERE table_schema = 'public' 
+            AND table_name = %s
+        )
+        """
+        
         with db_conn.cursor() as cursor:
-            cursor.execute(create_query)
+            cursor.execute(check_query, (ANALYSIS_LOG_TABLE_NAME,))
+            table_exists = cursor.fetchone()[0]
+            
+            if not table_exists:
+                print(f"📝 Creating log table: {ANALYSIS_LOG_TABLE_NAME}")
+                create_query = f'''
+                CREATE TABLE "{ANALYSIS_LOG_TABLE_NAME}" (
+                    log_id UUID PRIMARY KEY,
+                    run_timestamp TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    status VARCHAR(200),
+                    error_message TEXT,
+                    new_data_filename VARCHAR(255),
+                    historic_table_name VARCHAR(255),
+                    analysis_summary TEXT,
+                    analysis_data JSONB
+                )'''
+                cursor.execute(create_query)
+                db_conn.commit()
+                print(f"✅ Created log table: {ANALYSIS_LOG_TABLE_NAME}")
+            else:
+                print(f"✅ Log table already exists: {ANALYSIS_LOG_TABLE_NAME}")
+                
+            # Verify table structure
+            cursor.execute("""
+                SELECT column_name, data_type 
+                FROM information_schema.columns 
+                WHERE table_schema = 'public' AND table_name = %s 
+                ORDER BY ordinal_position
+            """, (ANALYSIS_LOG_TABLE_NAME,))
+            columns = cursor.fetchall()
+            print(f"📋 Table columns: {[col[0] for col in columns]}")
+            
+        return True
+        
+    except psycopg2.Error as db_err:
+        print(f"❌ Database error creating table: {db_err}")
+        try:
+            db_conn.rollback()
+        except:
+            pass
+        return False
     except Exception as e:
-        print(f"Table creation error: {e}")
+        print(f"❌ Unexpected error creating table: {e}")
+        return False
 
 def log_to_db(db_conn, log_id, status, filename, historic_table, summary, data, error=None):
     """Log analysis results to database"""
     if not db_conn:
+        print("❌ No database connection for logging")
         return False
+    
     try:
         ensure_log_table(db_conn)
-        json_data = json.dumps(sanitize_for_json(data), default=str) if data else None
         
+        # Prepare JSON data with better error handling
+        json_data = None
+        if data:
+            try:
+                sanitized_data = sanitize_for_json(data)
+                json_data = json.dumps(sanitized_data, default=str, ensure_ascii=False)
+                print(f"✅ JSON data prepared: {len(json_data)} characters")
+            except Exception as json_err:
+                print(f"⚠️ JSON serialization error: {json_err}")
+                json_data = json.dumps({"error": f"Serialization failed: {str(json_err)}", "log_id": str(log_id)})
+        
+        # Insert with explicit transaction and better error handling
         query = f'''INSERT INTO "{ANALYSIS_LOG_TABLE_NAME}" 
-                   (log_id, status, error_message, new_data_filename, historic_table_name, analysis_summary, analysis_data)
-                   VALUES (%s, %s, %s, %s, %s, %s, %s)'''
+                   (log_id, run_timestamp, status, error_message, new_data_filename, historic_table_name, analysis_summary, analysis_data)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s)'''
+        
+        params = (
+            str(log_id),
+            datetime.now(timezone.utc),
+            str(status)[:200] if status else None,
+            str(error)[:5000] if error else None,
+            str(filename)[:255] if filename else None,
+            str(historic_table)[:255] if historic_table else None,
+            str(summary)[:10000] if summary else None,
+            json_data
+        )
         
         with db_conn.cursor() as cursor:
-            cursor.execute(query, (str(log_id), status, error, filename, historic_table, summary, json_data))
-        return True
+            cursor.execute(query, params)
+            db_conn.commit()  # Explicit commit
+            print(f"✅ Successfully logged to database: {log_id}")
+            
+        # Verify insertion
+        verify_query = f'SELECT log_id FROM "{ANALYSIS_LOG_TABLE_NAME}" WHERE log_id = %s'
+        with db_conn.cursor() as cursor:
+            cursor.execute(verify_query, (str(log_id),))
+            result = cursor.fetchone()
+            if result:
+                print(f"✅ Log insertion verified: {result[0]}")
+                return True
+            else:
+                print(f"❌ Log insertion verification failed for: {log_id}")
+                return False
+                
+    except psycopg2.Error as db_err:
+        print(f"❌ Database error during logging: {db_err}")
+        try:
+            db_conn.rollback()
+        except:
+            pass
+        return False
     except Exception as e:
-        print(f"Logging failed: {e}")
+        print(f"❌ Unexpected logging error: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def fetch_historic_data(db_conn, table_name):
@@ -357,20 +471,32 @@ def generate_html_report(log_id, data):
     """
 
 def run_analysis(csv_filepath, historic_csv_filepath=None):
-    """Main analysis function using LLM"""
+    """Main analysis function using LLM with enhanced logging"""
     log_id = uuid.uuid4()
-    db_conn = get_db_connection()
     filename = os.path.basename(csv_filepath)
     
+    print(f"🚀 Starting analysis for: {filename} (Log ID: {log_id})")
+    
+    # Test database connection first
+    db_conn = get_db_connection()
+    if not db_conn:
+        error_msg = "Database connection failed - cannot log results"
+        print(f"❌ {error_msg}")
+        return f"<div class='error'>Database Error: {error_msg}</div>", "", "", str(log_id), {'error': error_msg, 'log_id': str(log_id)}
+    
     try:
+        print("📂 Loading CSV data...")
         # Load and analyze data
         new_df = pd.read_csv(csv_filepath, low_memory=False)
         if new_df.empty:
             raise ValueError("CSV file is empty")
+        print(f"✅ Loaded CSV: {len(new_df)} rows, {len(new_df.columns)} columns")
         
+        print("📊 Fetching historic data...")
         # Get historic data
         historic_rows, historic_stats = fetch_historic_data(db_conn, HISTORIC_TABLE_NAME)
         current_stats = calculate_current_stats(new_df)
+        print(f"✅ Historic data: {historic_rows} rows, {len(historic_stats)} columns")
         
         # Prepare LLM input
         analysis_input = {
@@ -386,11 +512,13 @@ def run_analysis(csv_filepath, historic_csv_filepath=None):
         }
         
         if not gemini_model:
-            raise Exception("Gemini AI not configured - check GEMINI_API_KEY")
+            raise Exception("Gemini AI not configured - check GEMINI_API_KEY in environment")
         
+        print("🤖 Calling Gemini AI for analysis...")
         # Call LLM with system prompt
         full_prompt = f"{SYSTEM_PROMPT}\n\nDATA TO ANALYZE:\n{json.dumps(analysis_input, default=str, indent=2)}"
         response = gemini_model.generate_content(full_prompt)
+        print("✅ Received LLM response")
         
         # Parse response
         response_text = response.text.strip()
@@ -399,13 +527,15 @@ def run_analysis(csv_filepath, historic_csv_filepath=None):
         elif response_text.startswith('```'):
             response_text = response_text[3:-3].strip()
         
+        print("📝 Parsing LLM response...")
         analyzed_data = json.loads(response_text)
+        print("✅ Successfully parsed analysis data")
         
         # Add metadata
         analyzed_data.update({
             'log_id': str(log_id),
             'new_filename': filename,
-            'historic_table_name': HISTORIC_TABLE_NAME,
+            'historic_table_name': HISTORIC_TABLE_NAME or 'Not configured',
             'current_preview': new_df.head(10).to_dict('records'),
             'report_html': generate_html_report(str(log_id), analyzed_data)
         })
@@ -422,37 +552,165 @@ def run_analysis(csv_filepath, historic_csv_filepath=None):
             status = f"⚠️ Issues Detected ({total_issues} total)"
         
         summary = generate_summary(analyzed_data, filename)
+        print(f"📊 Analysis complete: {status}")
         
-        # Log to database
-        if db_conn:
-            log_to_db(db_conn, log_id, status, filename, HISTORIC_TABLE_NAME, summary, analyzed_data)
+        # Log to database with verification
+        print("💾 Logging results to database...")
+        log_success = log_to_db(db_conn, log_id, status, filename, HISTORIC_TABLE_NAME, summary, analyzed_data)
         
+        if not log_success:
+            print("⚠️ Database logging failed, but analysis completed")
+        
+        print(f"🎉 Analysis completed successfully: {log_id}")
         return analyzed_data['report_html'], "", "", str(log_id), analyzed_data
+        
+    except json.JSONDecodeError as json_err:
+        error_msg = f"LLM response parsing failed: {str(json_err)}"
+        print(f"❌ {error_msg}")
+        print(f"Raw LLM response: {response.text[:500] if 'response' in locals() else 'No response received'}")
+        
+        error_summary = f"❌ JSON PARSING FAILED: {filename}\nError: {str(json_err)[:200]}\nLLM Response Preview: {response.text[:200] if 'response' in locals() else 'N/A'}"
+        log_to_db(db_conn, log_id, "❌ JSON Parse Failed", filename, HISTORIC_TABLE_NAME, error_summary, None, str(json_err))
+        
+        return f"<div class='error'>Analysis failed: {error_msg}</div>", "", "", str(log_id), {'error': error_msg, 'log_id': str(log_id)}
         
     except Exception as e:
         error_msg = f"Analysis failed: {str(e)}"
-        error_summary = f"❌ ANALYSIS FAILED: {filename}\nError: {str(e)[:200]}\nRecommendation: Check data format and API connectivity"
+        print(f"❌ {error_msg}")
+        import traceback
+        traceback.print_exc()
         
-        if db_conn:
-            log_to_db(db_conn, log_id, "❌ Analysis Failed", filename, HISTORIC_TABLE_NAME, error_summary, None, str(e))
+        error_summary = f"❌ ANALYSIS FAILED: {filename}\nError: {str(e)[:200]}\nRecommendation: Check data format, API connectivity, and database access"
+        log_to_db(db_conn, log_id, "❌ Analysis Failed", filename, HISTORIC_TABLE_NAME, error_summary, None, str(e))
         
         return f"<div class='error'>Analysis failed: {error_msg}</div>", "", "", str(log_id), {'error': error_msg, 'log_id': str(log_id)}
     
     finally:
         if db_conn:
             db_conn.close()
+            print("🔌 Database connection closed")
 
 def test_db_connection():
-    """Test database connection"""
+    """Test database connection and log table access"""
+    print("🧪 Testing database connection and logging...")
+    
     conn = get_db_connection()
-    if conn:
-        try:
-            with conn.cursor() as cursor:
-                cursor.execute("SELECT version()")
-                print(f"✅ Database connected: {cursor.fetchone()[0][:50]}...")
+    if not conn:
+        print("❌ Database connection failed")
+        return False
+        
+    try:
+        with conn.cursor() as cursor:
+            # Test basic connection
+            cursor.execute("SELECT version()")
+            version_info = cursor.fetchone()[0]
+            print(f"✅ Database connected: {version_info[:50]}...")
+            
+            # Test log table
+            ensure_log_table(conn)
+            
+            # Test a sample log insertion
+            test_log_id = uuid.uuid4()
+            test_data = {
+                'overview': {'current_dataset': {'rows': 100, 'columns': 5}},
+                'statistical_drifts': [],
+                'alerts': []
+            }
+            
+            print(f"🧪 Testing log insertion with ID: {test_log_id}")
+            success = log_to_db(
+                conn, test_log_id, "✅ Test Successful", 
+                "test_file.csv", "test_table", 
+                "Test log insertion successful", 
+                test_data
+            )
+            
+            if success:
+                # Verify the log was inserted
+                cursor.execute(f'SELECT COUNT(*) FROM "{ANALYSIS_LOG_TABLE_NAME}" WHERE log_id = %s', (str(test_log_id),))
+                count = cursor.fetchone()[0]
+                if count > 0:
+                    print(f"✅ Test log verified in database")
+                    
+                    # Clean up test data
+                    cursor.execute(f'DELETE FROM "{ANALYSIS_LOG_TABLE_NAME}" WHERE log_id = %s', (str(test_log_id),))
+                    conn.commit()
+                    print("🧹 Test data cleaned up")
+                else:
+                    print("❌ Test log not found in database")
+                    return False
+            else:
+                print("❌ Test log insertion failed")
+                return False
+            
+            # Check recent logs
+            cursor.execute(f'SELECT COUNT(*) FROM "{ANALYSIS_LOG_TABLE_NAME}"')
+            total_logs = cursor.fetchone()[0]
+            print(f"📊 Total logs in database: {total_logs}")
+            
+        conn.close()
+        print("✅ Database connection test completed successfully")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Database test failed: {e}")
+        import traceback
+        traceback.print_exc()
+        if conn:
             conn.close()
-            return True
-        except Exception as e:
-            print(f"❌ Database test failed: {e}")
-            return False
-    return False
+        return False
+
+def debug_recent_logs():
+    """Debug function to check recent logs in database"""
+    print("🔍 Debugging recent logs...")
+    
+    conn = get_db_connection()
+    if not conn:
+        print("❌ Cannot debug - no database connection")
+        return
+    
+    try:
+        with conn.cursor() as cursor:
+            # Check if table exists
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_schema = 'public' AND table_name = %s
+                )
+            """, (ANALYSIS_LOG_TABLE_NAME,))
+            
+            if not cursor.fetchone()[0]:
+                print(f"❌ Table '{ANALYSIS_LOG_TABLE_NAME}' does not exist")
+                return
+            
+            # Get recent logs
+            cursor.execute(f'''
+                SELECT log_id, run_timestamp, status, new_data_filename, error_message
+                FROM "{ANALYSIS_LOG_TABLE_NAME}" 
+                ORDER BY run_timestamp DESC 
+                LIMIT 5
+            ''')
+            
+            logs = cursor.fetchall()
+            if logs:
+                print(f"📋 Found {len(logs)} recent logs:")
+                for i, (log_id, timestamp, status, filename, error) in enumerate(logs, 1):
+                    print(f"  {i}. {log_id} | {timestamp} | {status}")
+                    print(f"     File: {filename}")
+                    if error:
+                        print(f"     Error: {error[:100]}...")
+                    print()
+            else:
+                print("📭 No logs found in database")
+                
+            # Check total count
+            cursor.execute(f'SELECT COUNT(*) FROM "{ANALYSIS_LOG_TABLE_NAME}"')
+            total = cursor.fetchone()[0]
+            print(f"📊 Total logs in database: {total}")
+            
+    except Exception as e:
+        print(f"❌ Debug failed: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        conn.close()
