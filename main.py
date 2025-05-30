@@ -42,7 +42,7 @@ def load_analysis_from_db(log_id_str):
             app.logger.error("Database connection failed when loading analysis")
             return None
             
-        analysis_engine.ensure_log_table_exists(db_conn) 
+        analysis_engine.ensure_log_table(db_conn) 
         
         with db_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
             query = f"""
@@ -320,7 +320,7 @@ def list_db_tables_page():
             flash("Database connection failed. Cannot display logs.", "error")
             error_message = "Database connection failed"
         else:
-            analysis_engine.ensure_log_table_exists(db_conn)
+            analysis_engine.ensure_log_table(db_conn)
             with db_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as cursor:
                 query = f"""
                 SELECT log_id, run_timestamp, status, new_data_filename, 
