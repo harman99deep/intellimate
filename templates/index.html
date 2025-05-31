@@ -373,7 +373,7 @@ function checkSystemHealth() {
         .then(response => response.json())
         .then(data => {
             // For now, using alert. Replace with modal display.
-            let message = `System Status: ${data.service_status.toUpperCase()}\n\n`;
+            let message = `System Status: ${data.service_status}\n\n`;
             message += `Database: ${data.components.database.status} - ${data.components.database.message}\n`;
             message += `Log Table: ${data.components.log_table.status} - ${data.components.log_table.message}\n`;
             message += `Baseline Config: ${data.components.historic_table_config.status} - ${data.components.historic_table_config.message}`;

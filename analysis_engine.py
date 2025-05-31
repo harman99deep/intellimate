@@ -420,7 +420,7 @@ def generate_summary(data, filename):
     baseline_rows = overview.get('baseline_dataset', {}).get('rows', 0)
     
     # Build summary
-    summary_parts = [f"📊 ANALYSIS: {filename} ({current_rows:,} rows vs {baseline_rows:,} baseline)"]
+    summary_parts = [f" Analysis: {filename} ({current_rows:,} rows vs {baseline_rows:,} baseline)"]
     
     if baseline_rows > 0:
         row_change = ((current_rows - baseline_rows) / baseline_rows) * 100
