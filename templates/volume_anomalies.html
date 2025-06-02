@@ -64,13 +64,17 @@
                                 
                                 {% if anomaly.type == 'row_count_anomaly' %}
                                     <div class="volume-chart">
+                                        {% set baseline_width = 50 %}
+                                        {% set current_width = (anomaly.current_value / anomaly.baseline_value * baseline_width)|round(1) %}
+                                        {% if current_width < 10 %}{% set current_width = 10 %}{% endif %}
+                                        {% if current_width > 100 %}{% set current_width = 100 %}{% endif %}
                                         <div class="chart-bar baseline-bar">
-                                            <div class="bar-fill" style="width: 50%"></div>
+                                            <div class="bar-fill" style="width: {{ baseline_width }}%"></div>
                                             <span class="bar-label">Baseline</span>
                                         </div>
                                         <div class="chart-bar current-bar">
                                             <div class="bar-fill {{ anomaly.severity.lower() }}" 
-                                                 style="width: {{ anomaly.chart_width|default(50) }}%"></div>
+                                                 style="width: {{ current_width }}%"></div>
                                             <span class="bar-label">Current</span>
                                         </div>
                                     </div>
